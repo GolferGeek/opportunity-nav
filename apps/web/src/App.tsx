@@ -7,6 +7,8 @@ import { Detail } from "./Detail.tsx";
 import { JobPanel } from "./Job.tsx";
 import { Settings } from "./Settings.tsx";
 import { Ask } from "./Ask.tsx";
+import { ExternalPanel } from "./External.tsx";
+import { SubscriptionPanel } from "./Subscription.tsx";
 
 export function App() {
   if (!token()) return <SignedOut />;
@@ -23,7 +25,13 @@ function Home() {
   const [selected, setSelected] = useState<string | null>(readSelection);
   const happening = usePoll<Group[]>(selected ? `/api/happening?scope=${selected}` : "/api/happening", 5000);
   const dash = usePoll<Dash>("/api/dashboard", 15_000);
-  const [job, setJob] = useState<string | null>(null);
+  const [job, setJobState] = useState<string | null>(null);
+  const [external, setExternalState] = useState<string | null>(null);
+  const [sub, setSubState] = useState<string | null>(null);
+  // One drawer at a time.
+  const setJob = (id: string | null) => { setJobState(id); if (id) { setExternalState(null); setSubState(null); } };
+  const setExternal = (id: string | null) => { setExternalState(id); if (id) { setJobState(null); setSubState(null); } };
+  const setSub = (id: string | null) => { setSubState(id); if (id) { setJobState(null); setExternalState(null); } };
   const [settings, setSettings] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -36,6 +44,11 @@ function Home() {
     location.hash = id ? `/n/${id}` : "";
     setSelected(id);
   };
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { setJobState(null); setExternalState(null); setSubState(null); setSettings(false); } };
+    addEventListener("keydown", esc);
+    return () => removeEventListener("keydown", esc);
+  }, []);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 6000);
@@ -64,11 +77,13 @@ function Home() {
         </div>
         {node && <Detail node={node} path={path} onChanged={refresh} onOpenJob={setJob} onError={setToast} onSelect={select} />}
         <div className="panes">
-          <Happening groups={happening.data} onChanged={refresh} onOpenJob={setJob} onSelect={select} onError={setToast} />
-          <Dashboard dash={dash.data} onChanged={refresh} onSelect={select} onError={setToast} />
+          <Happening groups={happening.data} onChanged={refresh} onOpenJob={setJob} onOpenExternal={setExternal} onSelect={select} onError={setToast} />
+          <Dashboard dash={dash.data} onChanged={refresh} onSelect={select} onOpenSub={setSub} onError={setToast} />
         </div>
       </main>
       {job && <JobPanel id={job} onClose={() => setJob(null)} onChanged={refresh} onError={setToast} />}
+      {external && <ExternalPanel id={external} onClose={() => setExternal(null)} />}
+      {sub && <SubscriptionPanel id={sub} onClose={() => setSub(null)} onChanged={refresh} onError={setToast} />}
       {settings && <Settings onClose={() => setSettings(false)} onError={setToast} />}
       {toast && <div className="toast" role="status" onClick={() => setToast(null)}>{toast}</div>}
     </div>

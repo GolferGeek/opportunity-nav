@@ -1,4 +1,5 @@
 import { ago, api, providerName, usePoll } from "./api.ts";
+import { Activity } from "./External.tsx";
 
 export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onClose: () => void; onChanged: () => void; onError: (m: string) => void }) {
   const { data: job, reload } = usePoll<any>(`/api/jobs/${id}`, 3000);
@@ -22,8 +23,6 @@ export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onCl
             {job.tokens && (job.tokens.input || job.tokens.output) ? ` · ${(job.tokens.input + job.tokens.output).toLocaleString()} tokens` : ""}
             {job.costUsd ? ` · $${job.costUsd.toFixed(2)}` : ""} · started by {job.createdBy} {ago(job.createdAt)}
           </div>
-          <h4>Asked</h4>
-          <pre className="prompt">{job.prompt}</pre>
           {job.summary && (<><h4>{job.status === "failed" ? "What went wrong" : "Result"}</h4><pre className="prompt">{job.summary}</pre></>)}
           {job.questions.length > 0 && (
             <>
@@ -33,13 +32,12 @@ export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onCl
               ))}
             </>
           )}
-          <h4>Activity</h4>
-          <ol className="events">
-            {job.events.filter((e: any) => e.type !== "usage").map((e: any, i: number) => (
-              <li key={i}><span className="muted">{new Date(e.at).toLocaleTimeString()}</span> {describe(e)}</li>
-            ))}
-            {job.events.length === 0 && <li className="muted">{job.status === "queued" ? "Waiting for a machine that has this repo and agent." : "Nothing yet."}</li>}
-          </ol>
+          <h4>{live ? "What it's doing" : "What it did"}</h4>
+          <Activity live={!!live}
+            lines={job.events.filter((e: any) => e.type !== "usage").map((e: any) => ({ at: e.at, text: describe(e) }))}
+            empty={job.status === "queued" ? "Waiting for a machine that has this repo and agent." : "Nothing yet."} />
+          <h4>Asked</h4>
+          <pre className="prompt">{job.prompt}</pre>
         </>
       )}
     </aside>

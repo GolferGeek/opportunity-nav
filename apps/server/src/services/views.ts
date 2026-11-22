@@ -14,6 +14,7 @@ export interface HappeningItem {
   status: string;
   at: Date;
   jobId?: string | null;
+  externalId?: string | null;
   options?: string[] | null;
   provider?: string;
   model?: string | null;
@@ -57,7 +58,7 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
   for (const q of questions)
     add(q.project_id, {
       kind: "question", id: q.id, title: q.body, detail: q.context ?? q.job_title ?? q.work_title ?? null,
-      status: "open", at: q.created_at, jobId: q.job_id, options: q.options, url: q.work_url,
+      status: "open", at: q.created_at, jobId: q.job_id, externalId: q.external_work_id, options: q.options, url: q.work_url,
     });
   for (const r of roadblocks)
     add(r.project_id, { kind: "roadblock", id: r.id, title: r.body, detail: r.job_title, status: "open", at: r.created_at, jobId: r.job_id });
@@ -68,7 +69,7 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
     });
   for (const w of external)
     add(w.project_id, {
-      kind: "external", id: w.id, title: w.title, detail: w.summary, status: w.status, at: w.updated_at,
+      kind: "external", id: w.id, title: w.title, detail: lastActivity(w.detail) ?? w.summary, status: w.status, at: w.updated_at, externalId: w.id,
       machine: w.machine, url: w.url, source: w.source,
     });
 
@@ -80,6 +81,12 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
       path: projectId ? pathOf(byId, projectId) : ["Not in a project yet"],
       items: items.sort((a, b) => RANK[a.kind] - RANK[b.kind] || +new Date(b.at) - +new Date(a.at)),
     }));
+}
+
+/** The newest activity line, so a running item says what it's doing right now. */
+function lastActivity(detail: any): string | null {
+  const a = detail?.activity;
+  return Array.isArray(a) && a.length ? String(a[a.length - 1].text ?? "").slice(0, 300) : null;
 }
 
 function subtreeIds(tree: TreeNode[], rootId: string): Set<string> {

@@ -98,12 +98,14 @@ export async function ingestExternal(sql: Sql, userId: string, machineId: string
   return sql.begin(async (tx) => {
     for (const it of report.items) {
       const [w] = await tx`
-        insert into external_work (user_id, node_id, source, external_id, project_id, title, status, repo, url, summary, updated_at)
+        insert into external_work (user_id, node_id, source, external_id, project_id, title, status, repo, url, summary, updated_at, started_at, detail)
         values (${userId}, ${machineId}, ${it.source}, ${it.externalId}, ${projectFor(it.repo)}, ${it.title}, ${it.status},
-                ${it.repo ?? null}, ${it.url ?? null}, ${it.summary ?? null}, ${it.updatedAt})
+                ${it.repo ?? null}, ${it.url ?? null}, ${it.summary ?? null}, ${it.updatedAt}, ${it.startedAt ?? null},
+                ${it.detail ? tx.json(it.detail as any) : null})
         on conflict (user_id, source, external_id) do update set node_id = excluded.node_id, project_id = excluded.project_id,
           title = excluded.title, status = excluded.status, repo = excluded.repo, url = excluded.url, summary = excluded.summary,
-          updated_at = excluded.updated_at, gone_at = null
+          updated_at = excluded.updated_at, gone_at = null, started_at = coalesce(excluded.started_at, external_work.started_at),
+          detail = coalesce(excluded.detail, external_work.detail)
         returning id, project_id`;
       for (const q of it.questions) {
         await tx`insert into questions (user_id, project_id, external_work_id, body) values (${userId}, ${w!.project_id}, ${w!.id}, ${q})

@@ -125,6 +125,29 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       return rows.map(jobRow);
     });
     r.get("/api/jobs/:id", async (req) => getJob(sql, req.principal.userId, id(req)));
+    r.get("/api/external/:id", async (req) => {
+      const [w] = await sql`select w.*, n.name as machine from external_work w left join nodes n on n.id = w.node_id
+        where w.id = ${id(req)} and w.user_id = ${req.principal.userId}`;
+      if (!w) throw new HttpError(404, "That work isn't here anymore.");
+      const questions = await sql`select q.id, q.body, q.status, a.text as answer from questions q left join answers a on a.question_id = q.id
+        where q.external_work_id = ${w.id} order by q.created_at`;
+      return {
+        id: w.id, source: w.source, externalId: w.external_id, projectId: w.project_id, title: w.title, status: w.status,
+        repo: w.repo, url: w.url, summary: w.summary, machine: w.machine, updatedAt: w.updated_at, startedAt: w.started_at,
+        gone: !!w.gone_at, detail: w.detail ?? {}, questions,
+      };
+    });
+    r.get("/api/subscriptions/:id", async (req) => {
+      const [s] = await sql`select s.*, n.name as machine from subscriptions s left join nodes n on n.id = s.reported_by
+        where s.id = ${id(req)} and s.user_id = ${req.principal.userId}`;
+      if (!s) throw new HttpError(404, "No such subscription.");
+      const windows = await sql`select * from usage_windows where subscription_id = ${s.id} order by kind, window_id`;
+      return {
+        id: s.id, provider: s.provider, label: s.label, plan: s.plan, status: s.status, message: s.message,
+        fetchedAt: s.fetched_at, observedAt: s.observed_at, machine: s.machine, monthlyCostUsd: s.monthly_cost_usd == null ? null : Number(s.monthly_cost_usd),
+        windows: windows.map((w) => ({ id: w.window_id, label: w.label, kind: w.kind, unit: w.unit, used: w.used, limit: w.lim, resetsAt: w.resets_at, model: w.model })),
+      };
+    });
     r.post("/api/jobs/:id/cancel", async (req) => cancelJob(sql, req.principal.userId, id(req)));
     r.post("/api/questions/:id/answer", async (req) => {
       const { answer } = z.object({ answer: z.string().trim().min(1) }).parse(req.body);

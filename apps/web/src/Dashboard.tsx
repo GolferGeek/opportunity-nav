@@ -24,7 +24,7 @@ const STATUS_TEXT: Record<string, string> = {
   error: "Couldn't check",
 };
 
-export function Dashboard({ dash, onChanged, onSelect, onError }: { dash: Dash | null; onChanged: () => void; onSelect: (id: string) => void; onError: (m: string) => void }) {
+export function Dashboard({ dash, onChanged, onSelect, onOpenSub, onError }: { dash: Dash | null; onChanged: () => void; onSelect: (id: string) => void; onOpenSub: (id: string) => void; onError: (m: string) => void }) {
   if (!dash) return <section className="pane"><h2>Dashboard</h2><p className="muted">Loading…</p></section>;
   return (
     <section className="pane">
@@ -35,7 +35,9 @@ export function Dashboard({ dash, onChanged, onSelect, onError }: { dash: Dash |
       )}
       <div className="subs">
         {dash.subscriptions.map((s) => (
-          <div key={s.id} className={`card sub status-${s.status}`}>
+          <div key={s.id} className={`card sub clickable status-${s.status}`} role="button" tabIndex={0}
+            onClick={(e) => { if (!(e.target as HTMLElement).closest(".cost, .cost-input")) onOpenSub(s.id); }}
+            onKeyDown={(e) => e.key === "Enter" && onOpenSub(s.id)}>
             <div className="sub-head">
               <strong>{providerName(s.provider)}</strong>
               <span className="muted">{[s.plan, s.label].filter(Boolean).join(" · ")}</span>
@@ -46,7 +48,7 @@ export function Dashboard({ dash, onChanged, onSelect, onError }: { dash: Dash |
                 {STATUS_TEXT[s.status] ?? s.status}{s.message ? `: ${s.message}` : ""}
               </div>
             )}
-            {s.windows.map((w) => {
+            {s.windows.filter((w) => w.unit !== "tokens").map((w) => {
               const pct = w.percent == null ? null : Math.min(100, Math.max(0, w.percent));
               return (
                 <div key={w.id} className="meter" title={`${pct == null ? `${w.used} ${w.unit}` : `${pct.toFixed(1)}% used`}${s.fetchedAt ? ` · checked ${ago(s.fetchedAt)}` : ""}`}>

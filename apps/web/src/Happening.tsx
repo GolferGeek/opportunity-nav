@@ -9,6 +9,7 @@ export interface Item {
   status: string;
   at: string;
   jobId?: string | null;
+  externalId?: string | null;
   options?: string[] | null;
   provider?: string;
   model?: string | null;
@@ -22,10 +23,11 @@ export interface Group {
   items: Item[];
 }
 
-export function Happening({ groups, onChanged, onOpenJob, onSelect, onError }: {
+export function Happening({ groups, onChanged, onOpenJob, onOpenExternal, onSelect, onError }: {
   groups: Group[] | null;
   onChanged: () => void;
   onOpenJob: (id: string) => void;
+  onOpenExternal: (id: string) => void;
   onSelect: (id: string) => void;
   onError: (m: string) => void;
 }) {
@@ -41,7 +43,7 @@ export function Happening({ groups, onChanged, onOpenJob, onSelect, onError }: {
             {g.projectId ? <button className="link" onClick={() => onSelect(g.projectId!)}>{g.path.join(" / ")}</button> : g.path.join(" / ")}
           </h4>
           {g.items.map((it) => (
-            <Card key={`${it.kind}-${it.id}`} it={it} onChanged={onChanged} onOpenJob={onOpenJob} onError={onError} />
+            <Card key={`${it.kind}-${it.id}`} it={it} onChanged={onChanged} onOpenJob={onOpenJob} onOpenExternal={onOpenExternal} onError={onError} />
           ))}
         </div>
       ))}
@@ -49,7 +51,7 @@ export function Happening({ groups, onChanged, onOpenJob, onSelect, onError }: {
   );
 }
 
-function Card({ it, onChanged, onOpenJob, onError }: { it: Item; onChanged: () => void; onOpenJob: (id: string) => void; onError: (m: string) => void }) {
+function Card({ it, onChanged, onOpenJob, onOpenExternal, onError }: { it: Item; onChanged: () => void; onOpenJob: (id: string) => void; onOpenExternal: (id: string) => void; onError: (m: string) => void }) {
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const run = async (fn: () => Promise<unknown>) => {
@@ -83,8 +85,8 @@ function Card({ it, onChanged, onOpenJob, onError }: { it: Item; onChanged: () =
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(answer); }} />
           <div className="row-buttons">
             <button type="submit" className="primary" disabled={busy || !answer.trim()}>Answer</button>
-            {it.jobId && <button type="button" onClick={() => onOpenJob(it.jobId!)}>Open job</button>}
-            {it.url && <a href={it.url} target="_blank" rel="noreferrer">Open</a>}
+            {it.jobId && <button type="button" onClick={() => onOpenJob(it.jobId!)}>See the job</button>}
+            {it.externalId && <button type="button" onClick={() => onOpenExternal(it.externalId!)}>See the work</button>}
             <button type="button" className="quietbtn" disabled={busy} onClick={() => void run(() => api("POST", `/api/questions/${it.id}/dismiss`))}>Dismiss</button>
           </div>
         </form>
@@ -98,7 +100,7 @@ function Card({ it, onChanged, onOpenJob, onError }: { it: Item; onChanged: () =
         <div className="body">{it.title}</div>
         {it.detail && <div className="detail">{it.detail}</div>}
         <div className="row-buttons">
-          {it.jobId && <button onClick={() => onOpenJob(it.jobId!)}>Open job</button>}
+          {it.jobId && <button onClick={() => onOpenJob(it.jobId!)}>See the job</button>}
           <button disabled={busy} onClick={() => void run(() => api("POST", `/api/roadblocks/${it.id}/clear`))}>Cleared</button>
         </div>
       </div>
@@ -117,14 +119,13 @@ function Card({ it, onChanged, onOpenJob, onError }: { it: Item; onChanged: () =
     );
 
   return (
-    <div className="card external">
+    <button className="card external clickable" onClick={() => onOpenExternal(it.id)}>
       <div className="tag">
         <span className={`dot ${it.status}`} /> {it.source === "handoff" ? "Handoff" : it.source === "github_issue" ? "Issue" : "Cloud agent"} · {it.status}
         {it.machine ? ` · ${it.machine}` : ""} · {ago(it.at)}
       </div>
       <div className="body">{it.title}</div>
-      {it.detail && <div className="detail">{it.detail}</div>}
-      {it.url && <a href={it.url} target="_blank" rel="noreferrer">Open</a>}
-    </div>
+      {it.detail && <div className="detail clip">{it.detail}</div>}
+    </button>
   );
 }

@@ -8,8 +8,10 @@
   "main": "dist/main.cjs",
   "scripts": {
     "build": "node build.mjs",
-    "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --publish never"
+    "start": "npm run ensure-electron && npm run build && electron .",
+    "dist": "npm run ensure-electron && npm run build && electron-builder --publish never",
+    "ensure-electron": "node scripts/ensure-electron.mjs",
+    "dist:mac": "npm run ensure-electron && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish never --mac dmg zip"
   },
   "dependencies": {},
   "devDependencies": {

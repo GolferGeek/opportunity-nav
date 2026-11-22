@@ -96,15 +96,15 @@ export interface TreeNode {
 export const PROVIDERS: { id: string; name: string }[] = [
   { id: "claude", name: "Claude Code" },
   { id: "codex", name: "Codex" },
-  { id: "gemini", name: "Gemini" },
-  { id: "agy", name: "Antigravity" },
+  { id: "agy", name: "Antigravity (agy)" },
   { id: "cursor", name: "Cursor" },
   { id: "grokbot", name: "Grok Bot" },
   { id: "grok", name: "Grok" },
   { id: "ollama", name: "Ollama" },
   { id: "mlx", name: "MLX" },
 ];
-export const providerName = (id: string) => PROVIDERS.find((p) => p.id === id)?.name ?? id;
+const OTHER_NAMES: Record<string, string> = { gemini: "Gemini CLI" };
+export const providerName = (id: string) => PROVIDERS.find((p) => p.id === id)?.name ?? OTHER_NAMES[id] ?? id;
 
 export function ago(d: string | Date | null | undefined): string {
   if (!d) return "";
