@@ -186,3 +186,24 @@ main { overflow-y: auto; padding: 14px 20px 60px; min-width: 0; }
 .limits .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .plain { white-space: pre-wrap; margin: 0; }
 .small { font-size: 12px; }
+
+/* Claude panel */
+.app.with-claude { grid-template-columns: 280px 1fr minmax(340px, 420px); }
+@media (max-width: 1100px) { .app.with-claude { grid-template-columns: 240px 1fr; } .app.with-claude .claude { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); z-index: 15; box-shadow: -8px 0 24px rgb(0 0 0 / 0.12); } }
+.claude { display: flex; flex-direction: column; min-height: 0; height: 100%; border-left: 1px solid var(--line); background: var(--panel); }
+.claude-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.threads { list-style: none; margin: 0; padding: 8px 14px; border-bottom: 1px solid var(--line); max-height: 40%; overflow-y: auto; }
+.threads li { padding: 3px 0; }
+.threads .on { font-weight: 600; }
+.messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.msg { white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.msg.user { align-self: flex-end; background: var(--accent-soft); padding: 8px 12px; border-radius: 12px 12px 2px 12px; max-width: 88%; }
+.msg.assistant { padding: 2px 2px; }
+.msg.tool { font-size: 12px; color: var(--muted); }
+.msg.error { color: var(--hot); font-size: 13px; }
+.msg.thinking { font-size: 13px; }
+.hello ul { padding-left: 18px; margin: 8px 0; }
+.claude-error { color: var(--hot); padding: 6px 14px; font-size: 13px; }
+.claude-input { border-top: 1px solid var(--line); padding: 10px 14px 14px; }
+.claude-input textarea { resize: none; }
+button.on-toggle { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }

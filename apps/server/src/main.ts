@@ -12,6 +12,9 @@ const sql = connect(env("DATABASE_URL"));
 const applied = await migrate(sql);
 if (applied.length) console.log(`Applied migrations: ${applied.join(", ")}`);
 
+// A restart ends any Claude panel turn that was running.
+await sql`update chat_threads set running = false where running`;
+
 const port = Number(env("PORT", "4317"));
 const host = env("HOST", "127.0.0.1");
 const app = await buildApp({
@@ -22,6 +25,12 @@ const app = await buildApp({
     command: env("OPNAV_ASSISTANT_CMD", "claude"),
     selfUrl: `http://127.0.0.1:${port}`,
     timeoutMs: Number(env("OPNAV_ASSISTANT_TIMEOUT_MS", "180000")),
+  },
+  chat: {
+    command: env("OPNAV_ASSISTANT_CMD", "claude"),
+    selfUrl: `http://127.0.0.1:${port}`,
+    timeoutMs: Number(env("OPNAV_CHAT_TIMEOUT_MS", "600000")),
+    appRepo: env("OPNAV_APP_REPO", "github.com/golfergeek/opportunity-nav"),
   },
 });
 await app.listen({ port, host });

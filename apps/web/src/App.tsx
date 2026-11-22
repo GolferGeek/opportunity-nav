@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { signOut, token, usePoll, type TreeNode } from "./api.ts";
 import { Nav } from "./Nav.tsx";
 import { Happening, type Group } from "./Happening.tsx";
@@ -9,6 +9,7 @@ import { Settings } from "./Settings.tsx";
 import { Ask } from "./Ask.tsx";
 import { ExternalPanel } from "./External.tsx";
 import { SubscriptionPanel } from "./Subscription.tsx";
+import { ClaudePanel } from "./ClaudePanel.tsx";
 
 export function App() {
   if (!token()) return <SignedOut />;
@@ -33,6 +34,9 @@ function Home() {
   const setExternal = (id: string | null) => { setExternalState(id); if (id) { setJobState(null); setSubState(null); } };
   const setSub = (id: string | null) => { setSubState(id); if (id) { setJobState(null); setExternalState(null); } };
   const [settings, setSettings] = useState(false);
+  const [claude, setClaudeState] = useState<boolean>(() => { try { return localStorage.getItem("opnav.claude") === "1"; } catch { return false; } });
+  const setClaude = (open: boolean) => { setClaudeState(open); try { localStorage.setItem("opnav.claude", open ? "1" : "0"); } catch {} };
+  const [pendingAsk, setPendingAsk] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,7 +49,9 @@ function Home() {
     setSelected(id);
   };
   useEffect(() => {
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { setJobState(null); setExternalState(null); setSubState(null); setSettings(false); } };
+    const esc = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") { e.preventDefault(); setClaudeState((o) => { try { localStorage.setItem("opnav.claude", o ? "0" : "1"); } catch {} return !o; }); }
+      if (e.key === "Escape") { setJobState(null); setExternalState(null); setSubState(null); setSettings(false); } };
     addEventListener("keydown", esc);
     return () => removeEventListener("keydown", esc);
   }, []);
@@ -63,16 +69,17 @@ function Home() {
     while (cur) { out.unshift(cur.title); cur = cur.parentId ? byId.get(cur.parentId) : undefined; }
     return out;
   }, [node, byId]);
-  const refresh = () => { void tree.reload(); void happening.reload(); void dash.reload(); };
+  const refresh = useCallback(() => { void tree.reload(); void happening.reload(); void dash.reload(); }, [tree.reload, happening.reload, dash.reload]);
 
   if (tree.error && /sign in/i.test(tree.error)) return <SignedOut expired />;
 
   return (
-    <div className="app">
+    <div className={`app ${claude ? "with-claude" : ""}`}>
       <Nav tree={tree.data ?? []} selected={selected} onSelect={select} onChanged={refresh} onError={setToast} />
       <main>
         <div className="topbar">
-          <Ask scope={node ? { id: node.id, path } : null} onDone={refresh} onError={setToast} />
+          <Ask scope={node ? { id: node.id, path } : null} onSend={(t) => { setClaude(true); setPendingAsk(t); }} />
+          <button className={claude ? "on-toggle" : ""} onClick={() => setClaude(!claude)} title="Talk to Claude (⌘J)">Claude</button>
           <button className="quietbtn" onClick={() => setSettings(true)}>Settings</button>
         </div>
         {node && <Detail node={node} path={path} onChanged={refresh} onOpenJob={setJob} onError={setToast} onSelect={select} />}
@@ -81,6 +88,8 @@ function Home() {
           <Dashboard dash={dash.data} onChanged={refresh} onSelect={select} onOpenSub={setSub} onError={setToast} />
         </div>
       </main>
+      {claude && <ClaudePanel scope={node ? { id: node.id, path } : null} onClose={() => setClaude(false)} onChanged={refresh}
+        pending={pendingAsk} onPendingTaken={() => setPendingAsk(null)} />}
       {job && <JobPanel id={job} onClose={() => setJob(null)} onChanged={refresh} onError={setToast} />}
       {external && <ExternalPanel id={external} onClose={() => setExternal(null)} />}
       {sub && <SubscriptionPanel id={sub} onClose={() => setSub(null)} onChanged={refresh} onError={setToast} />}

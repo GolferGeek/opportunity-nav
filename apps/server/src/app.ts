@@ -25,6 +25,7 @@ import { runAction } from "./services/actions.ts";
 import { agentCard, handleA2A } from "./a2a.ts";
 import { handleMcp } from "./mcp.ts";
 import { ask, type AssistantConfig } from "./assistant.ts";
+import { getThread, listThreads, send, stopThread, type ChatConfig } from "./chat.ts";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -38,6 +39,7 @@ export interface AppOptions {
   webDist?: string;
   logger?: boolean;
   assistant?: AssistantConfig;
+  chat?: ChatConfig;
 }
 
 const uuid = z.string().uuid();
@@ -185,6 +187,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       if (!opts.assistant) throw new HttpError(503, "The assistant isn't set up on this server.");
       return ask(sql, opts.assistant, req.principal.userId, b.text, b.scope);
     });
+    // ── Claude panel ──
+    const Scope = z.object({ id: uuid, path: z.array(z.string()) }).nullable().default(null);
+    r.get("/api/chat", async (req) => listThreads(sql, req.principal.userId));
+    r.post("/api/chat", async (req) => {
+      const b = z.object({ threadId: uuid.optional(), text: z.string().trim().min(1).max(20_000), scope: Scope }).parse(req.body);
+      if (!opts.chat) throw new HttpError(503, "The Claude panel isn't set up on this server.");
+      return send(sql, opts.chat, req.principal.userId, b);
+    });
+    r.get("/api/chat/:id", async (req) => {
+      const { after } = z.object({ after: z.coerce.number().int().nonnegative().default(0) }).parse(req.query);
+      return getThread(sql, req.principal.userId, id(req), after);
+    });
+    r.post("/api/chat/:id/stop", async (req) => stopThread(sql, req.principal.userId, id(req)));
     /** Same actions agents get; the UI's command bar uses this. */
     r.post("/api/act", async (req) => {
       const b = z.object({ action: z.string(), input: z.unknown().optional() }).parse(req.body);
