@@ -197,7 +197,8 @@ async function applyEvent(tx: Db, userId: string, jobId: string, turnId: string,
       await tx`update jobs set last_progress = ${e.text.slice(0, 500)}, updated_at = now() where id = ${jobId}`;
       return false;
     case "blocked":
-      await tx`insert into roadblocks (user_id, project_id, job_id, body) values (${userId}, ${projectId}, ${jobId}, ${e.text})`;
+      // Logged on the job (job_events) only. The agent often finishes another way;
+      // it becomes a roadblock only if the job then fails.
       return false;
     case "usage":
       await tx`update jobs set input_tokens = input_tokens + ${e.inputTokens ?? 0}, output_tokens = output_tokens + ${e.outputTokens ?? 0},
@@ -212,6 +213,8 @@ async function applyEvent(tx: Db, userId: string, jobId: string, turnId: string,
     case "result":
       await endTurn("done");
       await tx`update jobs set status = 'succeeded', summary = ${e.summary}, finished_at = now(), updated_at = now() where id = ${jobId}`;
+      // A job that succeeded needs nothing from the person.
+      await tx`update roadblocks set status = 'cleared', cleared_at = now() where job_id = ${jobId} and status = 'open'`;
       return true;
     case "error": {
       const [job] = await tx<{ attempts: number }[]>`select attempts from jobs where id = ${jobId}`;
@@ -224,17 +227,21 @@ async function applyEvent(tx: Db, userId: string, jobId: string, turnId: string,
       } else {
         await endTurn("done");
         await tx`update jobs set status = 'failed', summary = ${e.message}, finished_at = now(), updated_at = now() where id = ${jobId}`;
-        await tx`insert into roadblocks (user_id, project_id, job_id, body) values (${userId}, ${projectId}, ${jobId}, ${roadblockText(e.code, e.message)})`;
+        const denied = await tx<{ text: string }[]>`select distinct payload->>'text' as text from job_events
+          where turn_id = ${turnId} and type = 'blocked' and payload->>'text' is not null`;
+        await tx`insert into roadblocks (user_id, project_id, job_id, body)
+          values (${userId}, ${projectId}, ${jobId}, ${roadblockText(e.code, e.message, denied.map((d) => d.text))})`;
       }
       return true;
     }
   }
 }
 
-function roadblockText(code: string, message: string) {
-  if (code === "auth_required") return `The agent needs you to sign in again.\n${message}`;
-  if (code === "rate_limited") return `The agent hit its usage limit.\n${message}`;
-  return message;
+function roadblockText(code: string, message: string, denied: string[] = []) {
+  const why = code === "auth_required" ? `The agent needs you to sign in again.\n${message}`
+    : code === "rate_limited" ? `The agent hit its usage limit.\n${message}`
+    : message;
+  return [why, ...denied].join("\n");
 }
 
 /** Queue the same turn again (after a lost lease or a retryable error), keeping its kind and answer. */

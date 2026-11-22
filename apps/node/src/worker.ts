@@ -216,7 +216,8 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
         result = typeof event.result === "string" ? event.result : undefined;
         if (failed) failure = [result, ...(Array.isArray(event.errors) ? event.errors.filter(item => typeof item === "string") : [])].join(" ");
         if (Array.isArray(event.permission_denials) && event.permission_denials.length) {
-          emit({ type: "blocked", text: "Claude could not get permission to run a tool." });
+          const tools = [...new Set(event.permission_denials.map(item => string(object(item).tool_name)).filter(Boolean))];
+          emit({ type: "blocked", text: tools.length ? `Claude could not get permission to run ${tools.join(", ")}.` : "Claude could not get permission to run a tool." });
         }
         usage(event.usage, event.total_cost_usd);
       }
