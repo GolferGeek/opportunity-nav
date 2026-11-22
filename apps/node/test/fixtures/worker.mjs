@@ -8,6 +8,7 @@ if (process.argv.includes("--version")) {
 let prompt = "";
 for await (const chunk of process.stdin) prompt += chunk;
 assert.match(prompt, /opnav-needs-input/);
+assert.match(prompt, /Commit your work on a new branch opnav\/[a-f0-9]{8} and do not push/);
 assert.equal(process.env.OPNAV_NODE_TOKEN, undefined);
 const args = process.argv.slice(2);
 const codex = basename(process.argv[1]) === "codex";
@@ -15,7 +16,7 @@ assert.ok(args.includes("--model=test-model"));
 const emit = data => console.log(JSON.stringify(data));
 const question = 'Before I continue:\n```opnav-needs-input\n{"question":"Continue?","options":["Yes","No"]}\n```';
 if (codex) {
-  assert.deepEqual(args.slice(0, 3), ["exec", "resume", "--json"]);
+  assert.deepEqual(args.slice(0, 5), ["exec", "resume", "-c", 'sandbox_mode="workspace-write"', "--json"]);
   assert.ok(args.includes("model_reasoning_effort=\"high\""));
   assert.ok(args.includes("session-from-claude"));
   assert.match(prompt, /^Yes\n/);
@@ -25,6 +26,7 @@ if (codex) {
 } else {
   assert.deepEqual(args.slice(0, 4), ["-p", "--output-format", "stream-json", "--verbose"]);
   assert.ok(args.includes("--effort"));
+  assert.ok(args.includes("acceptEdits"));
   emit({ type: "system", subtype: "init", session_id: "session-from-claude" });
   if (prompt.startsWith("Wait")) {
     setInterval(() => {}, 1000);

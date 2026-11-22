@@ -73,7 +73,39 @@ test("Codex uses the app-server with isolated external auth and falls back to ac
     fetch: async () => { throw new Error("No provider HTTP expected"); },
   });
   const account = accounts[0];
-  assert.equal(account?.plan, "plus");
+  assert.equal(account?.plan, "Plus");
   assert.deepEqual(account?.windows.map(window => window.used), [12, 37, 25]);
   assert.deepEqual(JSON.parse(await readFile(join(home, ".codex/auth.json"), "utf8")), auth);
+});
+
+test("scoped Claude windows win over legacy windows and lapsed accounts stay visible", async t => {
+  const { home, save } = await workspace(t);
+  await save(".claude/.credentials.json", { claudeAiOauth: { accessToken: "test-claude" } });
+  await save(".gemini/antigravity-cli/antigravity-oauth-token",
+    { token: { access_token: "test-agy", refresh_token: "fixture-refresh", expiry: "2000-01-01" } });
+  await save(".config/cursor/auth.json", { accessToken: "test-cursor" });
+  const { accounts } = await readUsage({
+    system: { home, env: {}, platform: "linux" },
+    fetch: async url => {
+      assert.doesNotMatch(String(url), /googleapis/);
+      if (String(url).includes("cursor.sh")) return new Response(null, { status: 401 });
+      return Response.json({
+        five_hour: null, seven_day: { utilization: 99 },
+        limits: [
+          { kind: "weekly_all", group: "weekly", percent: 9 },
+          { kind: "weekly_scoped", group: "weekly", percent: 0, scope: { model: { display_name: "Fable" } } },
+        ],
+      });
+    },
+  });
+  assert.deepEqual(accounts.find(a => a.provider === "claude")?.windows.map(w => [w.id, w.label, w.used, w.model]), [
+    ["weekly_all", "Weekly", 9, undefined], ["weekly_scoped:fable", "Fable weekly", 0, "Fable"],
+  ]);
+  const agy = accounts.find(a => a.provider === "agy");
+  assert.equal(agy?.status, "stale");
+  assert.equal(agy?.message, "Start Antigravity to refresh it. No need to sign in again.");
+  assert.match(agy?.accountKey ?? "", /^[a-f0-9]{64}$/);
+  const cursor = accounts.find(a => a.provider === "cursor");
+  assert.equal(cursor?.status, "auth_required");
+  assert.equal(cursor?.message, "Cursor refused the saved sign-in. Sign in to the Cursor editor, or run `cursor-agent login`.");
 });

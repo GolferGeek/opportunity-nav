@@ -1,26 +1,28 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { parseEnv, getuid } from "node:process";
-import { promisify } from "node:util";
+import { getuid } from "node:process";
+import { parseEnv, promisify } from "node:util";
 import { childEnv } from "./system.ts";
 
 const exec = promisify(execFile);
 const envPath = () => join(homedir(), ".config/opportunity-nav/node.env");
 
+export class ServiceError extends Error {}
+
 export async function serviceEnv(): Promise<NodeJS.ProcessEnv> {
-  const file = await open(envPath(), constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => undefined);
-  if (!file) throw new Error("Create ~/.config/opportunity-nav/node.env with mode 0600.");
+  const file = await open(envPath(), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => undefined);
+  if (!file) throw new ServiceError("Create ~/.config/opportunity-nav/node.env with mode 0600.");
   try {
     const info = await file.stat();
     if (!info.isFile() || (info.mode & 0o777) !== 0o600 || info.uid !== getuid?.()) {
-      throw new Error("Set ~/.config/opportunity-nav/node.env to mode 0600 and own it as the service user.");
+      throw new ServiceError("Set ~/.config/opportunity-nav/node.env to mode 0600 and own it as the service user.");
     }
     const env = parseEnv(await file.readFile("utf8"));
     if (!env.OPNAV_SERVER_URL?.trim() || !env.OPNAV_NODE_TOKEN?.trim()) {
-      throw new Error("Set OPNAV_SERVER_URL and OPNAV_NODE_TOKEN in node.env.");
+      throw new ServiceError("Set OPNAV_SERVER_URL and OPNAV_NODE_TOKEN in node.env.");
     }
     return env;
   } finally {
@@ -28,17 +30,41 @@ export async function serviceEnv(): Promise<NodeJS.ProcessEnv> {
   }
 }
 
+async function prepareServiceEnv() {
+  const path = envPath();
+  const keys = ["OPNAV_SERVER_URL", "OPNAV_NODE_TOKEN", "OPNAV_WORKER_AUTONOMY",
+    "OPNAV_CHECKOUT_ROOTS", "OPNAV_HANDOFF_DIR", "OLLAMA_HOST"];
+  if (process.env.OPNAV_SERVER_URL && process.env.OPNAV_NODE_TOKEN &&
+    !await access(path).then(() => true, () => false)) {
+    const lines = keys.flatMap(key => {
+      const value = process.env[key];
+      if (value === undefined) return [];
+      const quote = ["'", '"', "`"].find(char => !value.includes(char));
+      if (!quote || /[\r\n]/.test(value) || (quote === '"' && value.includes("\\n"))) {
+        throw new ServiceError("Set the service configuration directly in node.env.");
+      }
+      return [`${key}=${quote}${value}${quote}`];
+    });
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    // An existing file is authoritative, including one created by a concurrent install.
+    await writeFile(path, lines.join("\n") + "\n", { flag: "wx", mode: 0o600 }).catch(error => {
+      if (error.code !== "EEXIST") throw error;
+    });
+  }
+  await serviceEnv();
+}
+
 function xml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function unitArg(value: string) {
-  return JSON.stringify(value.replaceAll("%", "%%").replaceAll("$", "$$"));
+  return JSON.stringify(value.replaceAll("%", "%%"));
 }
 
 export async function manageService(action: "install-service" | "uninstall-service" | "status"): Promise<string> {
   const mac = process.platform === "darwin";
-  if (!mac && process.platform !== "linux") throw new Error("User services are supported on macOS and Linux.");
+  if (!mac && process.platform !== "linux") throw new ServiceError("User services are supported on macOS and Linux.");
   const label = "opnav-node";
   const unit = label + ".service";
   const domain = `gui/${getuid?.()}`;
@@ -55,7 +81,9 @@ export async function manageService(action: "install-service" | "uninstall-servi
     return stdout.trim() !== "not-found";
   }
   if (action === "status") {
-    if (!await isLoaded()) return "opnav-node is not installed.";
+    if (!await isLoaded()) {
+      return await access(path).then(() => "opnav-node is stopped.", () => "opnav-node is not installed.");
+    }
     const { stdout } = await run(mac ? ["print", target] : ["show", "--property=ActiveState", "--value", unit]);
     const running = mac ? /^\s*state = running\s*$/m.test(stdout) : stdout.trim() === "active";
     return running ? "opnav-node is running." : "opnav-node is stopped.";
@@ -67,7 +95,7 @@ export async function manageService(action: "install-service" | "uninstall-servi
     return "opnav-node service removed.";
   }
 
-  await serviceEnv();
+  await prepareServiceEnv();
   const args = [process.execPath, resolve(process.argv[1]!), "service-run"];
   const searchPath = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
   const contents = mac ? `<?xml version="1.0" encoding="UTF-8"?>
@@ -88,7 +116,7 @@ Description=Opportunity Nav node
 [Service]
 Type=simple
 Environment=${unitArg("PATH=" + searchPath)}
-ExecStart=${args.map(unitArg).join(" ")}
+ExecStart=${args.map(arg => unitArg(arg.replaceAll("$", "$$"))).join(" ")}
 Restart=on-failure
 RestartSec=5
 

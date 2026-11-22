@@ -9,7 +9,7 @@ export async function geminiInvocation(sys: System, binary: string, turn: Turn) 
   const help = await command(sys, binary, ["--help"]);
   const format = help.includes("stream-json") ? "stream-json" : /--output-format/.test(help) ? "json" : "text";
   const session = turn.kind === "continue" && /--resume\b/.test(help) &&
-    /^[\da-f-]{36}$/i.test(turn.providerSessionId ?? "") ? turn.providerSessionId : undefined;
+    /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(turn.providerSessionId ?? "") ? turn.providerSessionId : undefined;
   const dir = join(sys.env.XDG_STATE_HOME ?? join(sys.home, ".local/state"), "opportunity-nav", "gemini");
   const path = join(dir, turn.job.id + ".txt");
   const input = turn.kind === "start" ? turn.job.prompt : session ? turn.answer!.text : [

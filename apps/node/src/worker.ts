@@ -83,6 +83,7 @@ export async function runWorker(sys: System, binary: string, turn: Turn, signal:
   const args = gemini?.args ?? workerArgs(turn, autonomy, claudeSandbox);
   const input = gemini?.input ?? (turn.kind === "continue" ? turn.answer!.text : turn.job.prompt);
   const prompt = `${input}\n\n${instruction}\nCommit your work on a new branch opnav/${turn.job.id.slice(0, 8)} and do not push.\n`;
+  if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
   const group = sys.platform !== "win32";
   const proc = spawn(binary, args, { cwd: turn.job.checkoutPath, env: childEnv(sys.env), detached: group,
     stdio: ["pipe", "pipe", "pipe"] });

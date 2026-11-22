@@ -119,6 +119,9 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
       job: { id: randomUUID(), projectId, title: "Cancel", prompt: "Wait", provider: "claude",
         model: "test-model", effort: "high", location: "cloud", checkoutPath: home } },
   ];
+  turns.push({ turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
+    job: { id: randomUUID(), projectId, title: "Local draft", prompt: "Draft a note", provider: "ollama",
+      model: "fixture:latest", location: "local", checkoutPath: "" } });
   const received = new Map<string, JobEvent[]>();
   let claim = 0;
   let firstBatch = "";
@@ -141,6 +144,8 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
       };
       if (req.url === NODE.heartbeat) {
         const heartbeat = NodeHeartbeat.parse(body);
+        assert.equal(heartbeat.autonomy, "edit");
+        assert.deepEqual(heartbeat.providers.find(value => value.provider === "ollama")?.models, ["fixture:latest"]);
         assert.ok(heartbeat.providers.some(value => value.provider === "claude" && value.canRunJobs && value.signedIn));
         active ||= heartbeat.activeJobIds.includes(turns[2]!.job.id);
         return respond({ nodeId, serverTime: new Date().toISOString(), usageIntervalSec: 1, heartbeatIntervalSec: 1 }, revoked ? 401 : 200);
@@ -154,7 +159,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
         return respond({ accepted: 1 });
       }
       if (req.url === NODE.claim) {
-        assert.deepEqual(ClaimRequest.parse(body), { providers: ["claude", "codex"], max: 1 });
+        assert.deepEqual(ClaimRequest.parse(body), { providers: ["claude", "codex", "ollama"], max: 1 });
         const turn = turns[claim++];
         if (turn) turn.leaseExpiresAt = new Date(Date.now() + 3500).toISOString();
         return respond({ turns: turn ? [turn] : [] });
@@ -195,11 +200,23 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
     serverUrl: `http://127.0.0.1:${address.port}`, token: "node-fixture", claimIntervalMs: 25,
     externalIntervalMs: 25, system: { home, env: { PATH: bin, OPNAV_NODE_TOKEN: "node-fixture" } },
     onStatus: message => statuses.push(message),
-    fetch: async (url, init) => String(url).startsWith("https://api.anthropic.com")
-      ? new Response(await usageFixture()) : fetch(url, init),
+    fetch: async (url, init) => {
+      if (String(url).startsWith("https://api.anthropic.com")) return new Response(await usageFixture());
+      if (String(url) === "http://127.0.0.1:11434/api/tags") {
+        return Response.json({ models: [{ model: "fixture:latest" }] });
+      }
+      if (String(url) === "http://127.0.0.1:11434/api/chat") {
+        assert.deepEqual(JSON.parse(String(init?.body)), {
+          model: "fixture:latest", stream: false, messages: [{ role: "user", content: "Draft a note" }],
+        });
+        assert.equal(new Headers(init?.headers).get("authorization"), null);
+        return Response.json({ done: true, message: { content: "A short note." } });
+      }
+      return fetch(url, init);
+    },
   });
   try {
-    for (let i = 0; i < 160 && !received.get(turns[2]!.job.id)?.some(event => event.type === "error"); i++) {
+    for (let i = 0; i < 160 && !received.get(turns[3]!.job.id)?.some(event => event.type === "result"); i++) {
       if (requestError) throw requestError;
       await sleep(30);
     }
@@ -212,6 +229,8 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
     assert.ok(second?.type === "result" && second.summary === "Finished.");
     const last = received.get(turns[2]!.job.id)?.at(-1);
     assert.ok(last?.type === "error" && last.code === "cancelled");
+    const draft = received.get(turns[3]!.job.id)?.at(-1);
+    assert.ok(draft?.type === "result" && draft.summary === "A short note.");
     revoked = true;
     for (let i = 0; i < 60 && !statuses.includes("The node token was revoked."); i++) await sleep(30);
     assert.ok(statuses.includes("The node token was revoked."));

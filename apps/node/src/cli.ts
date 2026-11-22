@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { delimiter } from "node:path";
-import { manageService, serviceEnv } from "./service.ts";
+import { manageService, ServiceError, serviceEnv } from "./service.ts";
 import { readUsage, startNode } from "./index.ts";
 
 async function main() {
@@ -41,7 +41,7 @@ async function main() {
 
 main().catch(error => {
   // Service manager errors may contain process output. Only print our own messages.
-  const message = error?.constructor === Error && /^(Create ~|Set |User services)/.test(error.message)
+  const message = error instanceof ServiceError
     ? error.message : "Could not complete the opnav-node command.";
   process.stderr.write(message + "\n");
   process.exitCode = 1;

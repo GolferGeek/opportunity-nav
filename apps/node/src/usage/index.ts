@@ -16,7 +16,7 @@ export const adapters = [claude, codex, cursor, grokbot, agy, grok, gemini];
 
 const displayNames = {
   claude: "Claude Code", codex: "Codex", cursor: "Cursor", grokbot: "Grok Bot",
-  grok: "Grok", agy: "Antigravity", gemini: "Gemini CLI", ollama: "Ollama",
+  grok: "Grok", agy: "Antigravity", gemini: "Gemini CLI", ollama: "Ollama", mlx: "MLX",
 };
 
 export function createUsageCollector(ctx: UsageContext) {
