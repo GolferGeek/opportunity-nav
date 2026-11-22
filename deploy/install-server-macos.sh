@@ -58,7 +58,12 @@ cat > "$PLIST" <<PL
 </dict></plist>
 PL
 chmod +x "$ROOT/deploy/run-server.sh"
-launchctl bootout "gui/$(id -u)/dev.opportunitynav.server" 2>/dev/null || true
+SVC="gui/$(id -u)/dev.opportunitynav.server"
+if launchctl print "$SVC" >/dev/null 2>&1; then
+  launchctl bootout "$SVC" 2>/dev/null || true
+  # bootout returns before launchd lets go; bootstrapping too soon fails with "Input/output error".
+  for i in $(seq 1 20); do launchctl print "$SVC" >/dev/null 2>&1 || break; sleep 0.5; done
+fi
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 for i in $(seq 1 30); do curl -sf http://127.0.0.1:4317/healthz >/dev/null && break; sleep 1; done
 curl -sf http://127.0.0.1:4317/healthz >/dev/null || { echo "Server didn't come up; see ~/Library/Logs/opportunity-nav/server.log"; exit 1; }
