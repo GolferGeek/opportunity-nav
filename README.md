@@ -1,5 +1,71 @@
 # Opportunity Nav
 
-Matt Weber's home base for everything he's building: a tree of projects, what's happening now, questions and roadblocks, and subscription status, driven by him and by his agents.
+Matt Weber's home base for everything he's building: a tree of areas and projects, what's in flight, questions waiting on him, roadblocks, and what his AI subscriptions have left. He drives it, and so do his agents. It isn't hard-coded to him, though: anyone can run their own.
 
-See [INTENTION.md](INTENTION.md) for the original intention.
+See [INTENTION.md](INTENTION.md) for why it exists.
+
+## How it fits together
+
+One app, three pieces:
+
+- **Server** (`apps/server`): Postgres plus an API. It holds everything: your tree, jobs, questions and usage. It runs on one always-on machine.
+- **Desktop app** (`apps/desktop`): the window you use. It also runs the **helper** (`apps/node`), so the agents on that machine report their usage and can take jobs. Headless machines run the helper as a background service instead.
+- **Agent doors:** A2A at `/a2a` (agent card at `/.well-known/agent-card.json`) and MCP at `/mcp`. Grok Bot or any other agent can read the tree, add to it, answer questions and start jobs.
+
+Usage comes straight from each provider, using the sign-in its own CLI already saved on that machine. It's read-only, tokens are never refreshed and never sent anywhere else. See [docs/subscription-usage.md](docs/subscription-usage.md).
+
+## Set up
+
+You need Node 24 or newer and Postgres.
+
+**1. Server** (on your always-on machine)
+
+```sh
+git clone https://github.com/GolferGeek/opportunity-nav && cd opportunity-nav
+npm ci && npm run build -w @opnav/web
+cp .env.example .env              # set DATABASE_URL and PUBLIC_URL
+npm run admin -w @opnav/server -- setup --name "Your name"   # prints a sign-in link
+npm start -w @opnav/server
+```
+
+On a Mac, `deploy/install-server-macos.sh` does all of this. It also runs the server as a LaunchAgent and publishes it on your tailnet over HTTPS with `tailscale serve`.
+
+**2. Desktop app** (on each machine you use)
+
+```sh
+npm run dist -w @opnav/desktop    # builds a .dmg / AppImage into apps/desktop/release
+```
+
+Open it and paste the sign-in link. Leave **Use this machine's agents** on, and it connects the helper for you.
+
+**3. Headless machines** (no screen)
+
+Create a machine token in **Settings → Connect a machine**, then:
+
+```sh
+OPNAV_SERVER_URL=https://your-server OPNAV_NODE_TOKEN=… npx opnav-node install-service
+```
+
+**4. Agents**
+
+Create an agent token in **Settings → Connect an agent**. Give the agent the card URL and the token.
+
+## Jobs
+
+Start a job from any project: pick the agent, the model, and local or cloud. A machine that has the project's repo checked out and that agent signed in picks it up. If the agent needs you, the job stops with a question in **What's happening**. Your answer resumes the same session on the same machine.
+
+Jobs commit to a new branch, `opnav/<job id>`, and never push. You review first.
+
+How much a job can do on a machine is that machine's choice (`OPNAV_WORKER_AUTONOMY`):
+- `edit` (the default): edit files in the checkout and run commands in a sandbox.
+- `full`: no sandbox and no prompts.
+
+## Developing
+
+```sh
+npm run check     # typecheck + tests. Server tests need OPNAV_TEST_DATABASE_URL (a throwaway DB; it's wiped).
+npm run dev -w @opnav/server
+npm run dev -w @opnav/web        # http://localhost:5317, proxying the API
+```
+
+Read [AGENTS.md](AGENTS.md) before changing code. There are no GitHub Actions. Checks run locally.

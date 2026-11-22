@@ -1,0 +1,28 @@
+{
+  "name": "@opnav/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Opportunity Nav desktop app",
+  "author": "Opportunity Nav",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --publish never"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@opnav/node": "*",
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.25.0"
+  },
+  "build": {
+    "appId": "dev.opportunitynav.app",
+    "productName": "Opportunity Nav",
+    "files": ["dist/**", "package.json"],
+    "directories": { "output": "release" },
+    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.productivity" },
+    "linux": { "target": ["AppImage", "tar.gz"], "category": "Development", "executableName": "opportunity-nav" }
+  }
+}

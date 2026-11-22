@@ -1,1 +1,10 @@
-{ "files": [], "references": [{ "path": "packages/shared" }, { "path": "apps/node" }] }
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "apps/node" },
+    { "path": "apps/server" },
+    { "path": "apps/web" },
+    { "path": "apps/desktop" }
+  ]
+}

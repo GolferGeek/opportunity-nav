@@ -7,7 +7,7 @@
   "scripts": {
     "check": "npm run typecheck && npm test",
     "typecheck": "tsc -b",
-    "test": "node --test --experimental-strip-types \"packages/*/test/**/*.test.ts\" \"apps/*/test/**/*.test.ts\""
+    "test": "node --env-file-if-exists=.env --test \"packages/*/test/**/*.test.ts\" \"apps/*/test/**/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
