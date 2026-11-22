@@ -107,7 +107,10 @@ export const JobEvent = z.discriminatedUnion("type", [
   EventBase.extend({ type: z.literal("session"), providerSessionId: z.string() }),
   /** Short human-readable progress line ("Running tests"). Keep it plain. */
   EventBase.extend({ type: z.literal("progress"), text: z.string() }),
-  /** Tool approval the worker could not get. Not a question; shown as a roadblock. */
+  /**
+   * Tool approval the worker could not get. Logged on the job only: the agent
+   * often finishes another way. It becomes part of the roadblock if the job fails.
+   */
   EventBase.extend({ type: z.literal("blocked"), text: z.string() }),
   /** Token/cost accounting for the turn, if known. */
   EventBase.extend({

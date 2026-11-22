@@ -42,6 +42,11 @@ export const UsageAccount = z.object({
    * NEVER derived from a token.
    */
   accountKey: z.string().regex(/^[a-f0-9]{64}$/),
+  /**
+   * Older keys this same account was reported under (e.g. by a helper that
+   * keyed on machine-local data). The server folds those cards into this one.
+   */
+  aliases: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(4).optional(),
   /** Shown in the UI, e.g. the email or "Personal". Optional. */
   label: z.string().optional(),
   plan: z.string().optional(),
