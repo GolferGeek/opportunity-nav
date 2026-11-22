@@ -17,12 +17,19 @@ export const grok: Adapter = {
     for (const value of Object.values(auth)) {
       const entry = object(value);
       const token = string(entry.key);
-      if (!token) continue;
+      const refreshToken = string(entry.refresh_token);
+      if (!token && !refreshToken) continue;
       const claims = jwt(token);
+      const identity = jwt(string(entry.id_token));
+      const expiresAt = timestamp(entry.expires_at ?? claims.exp);
+      // Grok's collector treats refresh as valid for 30 days after access expiry.
+      const refreshExpiresAt = timestamp(entry.refresh_token_expires_at)
+        ?? (expiresAt && new Date(Date.parse(expiresAt) + 30 * 86_400_000).toISOString());
       const cache = await json(join(home, "settings_cache.json"));
       const settings = object(parse(string(cache.payload) ?? "").settings);
-      return { token, id: string(claims.sub ?? entry.user_id ?? entry.account_id) ?? string(entry.email)?.toLowerCase(),
-        expiresAt: timestamp(entry.expires_at ?? claims.exp), plan: string(settings.subscription_tier_display) };
+      return { token, refreshToken, refreshExpiresAt,
+        id: string(identity.sub ?? claims.sub ?? entry.user_id ?? entry.account_id) ?? string(identity.email ?? entry.email)?.toLowerCase(),
+        expiresAt, plan: string(settings.subscription_tier_display) };
     }
   },
   async read(ctx, login) {
@@ -32,7 +39,7 @@ export const grok: Adapter = {
     ]);
     const billing = monthly.status === "fulfilled" ? object(monthly.value.config) : {};
     const credit = credits.status === "fulfilled" ? object(credits.value.config) : {};
-    login.id ??= string(billing.userId ?? credit.userId);
+    if (!login.refreshToken) login.id ??= string(billing.userId ?? credit.userId);
     const cap = amount(billing.monthlyLimit);
     const used = amount(billing.used);
     const period = object(credit.currentPeriod);

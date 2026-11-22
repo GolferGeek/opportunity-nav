@@ -8,6 +8,9 @@ export interface Login {
   token?: string;
   plan?: string;
   expiresAt?: string;
+  refreshToken?: string;
+  refreshExpiresAt?: string;
+  credential?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -31,6 +34,15 @@ export interface UsageContext {
 }
 
 export class AuthRequired extends Error {}
+export class LoginStale extends Error {}
+
+export function accessToken(login: Login): string {
+  if (login.token && (!login.expiresAt || Date.parse(login.expiresAt) > Date.now())) return login.token;
+  if (login.refreshToken && (!login.refreshExpiresAt || Date.parse(login.refreshExpiresAt) > Date.now())) {
+    throw new LoginStale();
+  }
+  throw new AuthRequired();
+}
 
 export function jwt(token?: string): Record<string, unknown> {
   const payload = token?.split(".")[1];
@@ -45,16 +57,16 @@ export function percent(id: string, label: string, kind: UsageWindow["kind"], va
 }
 
 export async function request(ctx: UsageContext, url: string, login: Login, body?: object, headers?: Record<string, string>): Promise<Record<string, unknown>> {
-  if (!login.token || (login.expiresAt && Date.parse(login.expiresAt) <= Date.now())) throw new AuthRequired();
+  const token = accessToken(login);
   const timeout = AbortSignal.timeout(12_000);
   const result = await ctx.fetch(url, {
     method: body ? "POST" : "GET",
-    headers: { Authorization: `Bearer ${login.token}`, "Content-Type": "application/json", ...headers },
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers },
     body: body && JSON.stringify(body),
     redirect: "error",
     signal: ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout,
   });
-  if (result.status === 401 || result.status === 403) throw new AuthRequired();
+  if (result.status === 401 || result.status === 403) throw new AuthRequired("refused");
   if (!result.ok) throw new Error("Usage request failed");
   const payload: unknown = await result.json();
   if (!payload || typeof payload !== "object" || Array.isArray(payload) || "error" in payload) {

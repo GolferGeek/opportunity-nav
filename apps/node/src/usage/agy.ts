@@ -17,15 +17,16 @@ export const agy: Adapter = {
       await json(join(localPath(sys, sys.env.AGY_DIR ?? "~/.gemini/antigravity-cli"), "antigravity-oauth-token"));
     const oauth = object(saved.token);
     const token = string(oauth.access_token ?? saved.access_token);
-    if (!token) return;
+    const refreshToken = string(oauth.refresh_token ?? saved.refresh_token);
+    if (!token && !refreshToken) return;
     const claims = jwt(string(oauth.id_token ?? saved.id_token));
-    return { token, id: string(claims.sub) ?? string(claims.email ?? saved.email)?.toLowerCase(),
+    return { token, refreshToken, refreshExpiresAt: timestamp(oauth.refresh_token_expires_at ?? saved.refresh_token_expires_at), id: string(claims.sub) ?? string(claims.email ?? saved.email)?.toLowerCase(),
       expiresAt: timestamp(oauth.expiry ?? saved.expiry) };
   },
   async read(ctx, login) {
     const base = "https://daily-cloudcode-pa.googleapis.com/v1internal:";
     const headers = { "User-Agent": "antigravity" };
-    if (!login.id) {
+    if (!login.id && !login.refreshToken) {
       const profile = await request(ctx, "https://openidconnect.googleapis.com/v1/userinfo", login);
       login.id = string(profile.sub) ?? string(profile.email)?.toLowerCase();
     }

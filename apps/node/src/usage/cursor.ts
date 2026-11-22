@@ -2,7 +2,7 @@
 import { join } from "node:path";
 import { command, json, localPath, number, object, string, timestamp } from "../system.ts";
 import type { System } from "../system.ts";
-import { jwt, percent, request } from "./common.ts";
+import { AuthRequired, jwt, percent, request } from "./common.ts";
 import type { Adapter, Login, UsageContext } from "./common.ts";
 import type { UsageWindow } from "@opnav/shared";
 
@@ -13,19 +13,28 @@ export async function cursorLogin(sys: System): Promise<Login | undefined> {
   const cliToken = string(cli.accessToken);
   const cliExpiry = timestamp(jwt(cliToken).exp);
   let token = envToken ?? cliToken;
-  if (!envToken && sys.env.CURSOR_API_KEY && cli.apiKey !== sys.env.CURSOR_API_KEY) return;
+  const apiKey = string(sys.env.CURSOR_API_KEY ?? cli.apiKey);
+  if (!envToken && sys.env.CURSOR_API_KEY && cli.apiKey !== sys.env.CURSOR_API_KEY) {
+    return { credential: apiKey };
+  }
   if (!envToken && !sys.env.CURSOR_API_KEY && (!token || (cliExpiry && Date.parse(cliExpiry) <= Date.now()))) {
     const root = sys.platform === "darwin" ? join(sys.home, "Library/Application Support") : config;
     const editor = await command(sys, "sqlite3", ["-readonly", join(root, "Cursor/User/globalStorage/state.vscdb"),
       "SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken' LIMIT 1"]);
     token = string(editor) ?? token;
   }
-  if (!token) return;
+  const saved = !envToken && token === cliToken;
+  const refreshToken = saved ? string(cli.refreshToken ?? cli.refresh_token) : undefined;
+  if (!token && !refreshToken && !apiKey) return;
+  const identity = saved ? jwt(string(cli.idToken ?? cli.id_token)) : {};
   const claims = jwt(token);
   const subject = string(claims.sub);
   return {
-    id: subject?.split("|").at(-1) ?? (token === cliToken ? string(cli.userId) : undefined),
-    token, expiresAt: timestamp(claims.exp),
+    id: string(identity.sub) ?? subject?.split("|").at(-1)
+      ?? (saved ? string(cli.userId) ?? string(identity.email ?? cli.email)?.toLowerCase() : undefined),
+    token, refreshToken, credential: apiKey,
+    expiresAt: timestamp(claims.exp ?? (saved ? cli.expiresAt : undefined)),
+    refreshExpiresAt: saved ? timestamp(cli.refreshTokenExpiresAt ?? cli.refresh_token_expires_at) : undefined,
   };
 }
 
@@ -72,10 +81,18 @@ export const cursor: Adapter = {
   commands: ["cursor-agent", "agent", "cursor"],
   detect: cursorLogin,
   async read(ctx, login) {
+    if (login.credential && !login.token && !login.refreshToken) {
+      return { windows: [], unavailable: "Cursor API key sign-ins have no subscription limits." };
+    }
     const [period, response] = await Promise.all([
       dashboard(ctx, login, "GetCurrentPeriodUsage"),
       dashboard(ctx, login, "GetPlanInfo"),
-    ]);
+    ]).catch(error => {
+      if (error instanceof AuthRequired && error.message === "refused") {
+        throw new AuthRequired("Cursor refused the saved sign-in. Sign in to the Cursor editor, or run `cursor-agent login`.");
+      }
+      throw error;
+    });
     const plan = object(response.planInfo ?? response);
     const weekly = plan.includedUsagePeriod === 2 || /^(INCLUDED_USAGE_PERIOD_)?WEEKLY$/i.test(string(plan.includedUsagePeriod) ?? "");
     const reset = weekly ? plan.includedUsageResetsAt : period.billingCycleEnd;

@@ -10,9 +10,12 @@ export const gemini: Adapter = {
     const dir = join(localPath(sys, sys.env.GEMINI_CLI_HOME ?? "~"), ".gemini");
     const oauth = await json(join(dir, "oauth_creds.json"));
     const google = await json(join(dir, "google_accounts.json"));
-    if (!oauth.access_token && !google.active && !sys.env.GEMINI_API_KEY) return;
+    const credential = string(sys.env.GEMINI_API_KEY ?? sys.env.GOOGLE_API_KEY);
+    const token = string(oauth.access_token);
+    const refreshToken = string(oauth.refresh_token);
+    if (!token && !refreshToken && !google.active && !credential) return;
     const claims = jwt(string(oauth.id_token));
-    return { id: string(claims.sub) ?? string(google.active)?.toLowerCase() };
+    return { token, refreshToken, credential, id: string(claims.sub) ?? string(claims.email ?? google.active)?.toLowerCase() };
   },
   async read() {
     // Gemini CLI documents its interactive /stats command for quota.

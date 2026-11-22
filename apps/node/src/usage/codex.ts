@@ -6,9 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { childEnv, command, executable, json, localPath, number, object, parse, string, timestamp } from "../system.ts";
-import { AuthRequired, jwt, percent } from "./common.ts";
+import { accessToken, AuthRequired, jwt, percent } from "./common.ts";
 import type { System } from "../system.ts";
 import type { Adapter, Login, UsageContext } from "./common.ts";
+
+const plans: ReadonlyMap<string, string> = new Map([
+  ["pro", "Pro 200"], ["prolite", "Pro 100"], ["promax", "Pro 500"], ["team", "Business"], ["plus", "Plus"],
+]);
 
 async function limits(ctx: UsageContext, login: Login) {
   const binary = await executable(ctx.sys, ["codex"]);
@@ -61,7 +65,7 @@ async function limits(ctx: UsageContext, login: Login) {
     proc.stdin.write('{"method":"initialized"}\n');
     // External-token mode has no refresh token and cannot update the user's sign-in.
     await rpc("account/login/start", { type: "chatgptAuthTokens", accessToken: login.token,
-      chatgptAccountId: login.metadata?.workspace, chatgptPlanType: login.plan });
+      chatgptAccountId: login.metadata?.workspace, chatgptPlanType: login.metadata?.rawPlan });
     const data = await rpc("account/rateLimits/read");
     const buckets = Object.entries(object(data.rateLimitsByLimitId));
     const legacy = object(data.rateLimits);
@@ -94,7 +98,7 @@ async function limits(ctx: UsageContext, login: Login) {
       const account = await rpc("account/read", { refreshToken: false }, 2000).catch(() => ({}));
       plan = string(object(object(account).account).planType) ?? login.plan;
     }
-    return { plan, windows };
+    return { plan: plan && (plans.get(plan.toLowerCase()) ?? plan), windows };
   } finally {
     ctx.signal?.removeEventListener("abort", abort);
     lines.close();
@@ -127,19 +131,25 @@ export const codex: Adapter = {
     const auth = await savedAuth(sys);
     const tokens = object(auth.tokens);
     const token = string(sys.env.CODEX_ACCESS_TOKEN) ?? string(tokens.access_token);
-    if (!token) return auth.OPENAI_API_KEY || sys.env.OPENAI_API_KEY || auth.auth_mode === "apikey"
-      ? { plan: "API key" } : undefined;
+    const refreshToken = sys.env.CODEX_ACCESS_TOKEN ? undefined : string(tokens.refresh_token);
+    const credential = string(auth.OPENAI_API_KEY ?? sys.env.OPENAI_API_KEY);
+    if (!token && !refreshToken) return credential || auth.auth_mode === "apikey"
+      ? { credential, plan: "API key" } : undefined;
     const claims = jwt(token);
     const access = object(claims["https://api.openai.com/auth"]);
-    const identity = sys.env.CODEX_ACCESS_TOKEN ? access : object(jwt(string(tokens.id_token))["https://api.openai.com/auth"]);
+    const profile = sys.env.CODEX_ACCESS_TOKEN ? {} : jwt(string(tokens.id_token));
+    const identity = sys.env.CODEX_ACCESS_TOKEN ? access : object(profile["https://api.openai.com/auth"]);
     const workspace = string((sys.env.CODEX_ACCESS_TOKEN ? undefined : tokens.account_id) ?? access.chatgpt_account_id);
     const user = string(identity.chatgpt_user_id ?? identity.user_id ?? access.chatgpt_user_id ?? access.user_id);
-    return { token, id: workspace && user ? `${workspace}\n${user}` : undefined, expiresAt: timestamp(claims.exp),
-      plan: string(access.chatgpt_plan_type), metadata: { workspace } };
+    const plan = string(access.chatgpt_plan_type);
+    return { token, refreshToken, refreshExpiresAt: timestamp(tokens.refresh_token_expires_at),
+      id: workspace && user ? `${workspace}\n${user}` : string(profile.sub ?? claims.sub) ?? string(profile.email)?.toLowerCase(),
+      expiresAt: timestamp(claims.exp), plan: plan && (plans.get(plan.toLowerCase()) ?? plan),
+      metadata: { workspace, rawPlan: plan } };
   },
   async read(ctx, login) {
     if (login.plan === "API key") return { windows: [], unavailable: "API key sign-ins have no subscription limits." };
-    if (!login.token || (login.expiresAt && Date.parse(login.expiresAt) <= Date.now())) throw new AuthRequired();
+    accessToken(login);
     if (!login.metadata?.workspace) throw new Error("Codex account could not be identified");
     return limits(ctx, login);
   },

@@ -8,6 +8,9 @@ export const grokbot: Adapter = {
   commands: ["grokbot"],
   detect: cursorLogin,
   async read(ctx, login) {
+    if (login.credential && !login.token && !login.refreshToken) {
+      return { windows: [], unavailable: "Cursor API key sign-ins have no Grok Bot allowance." };
+    }
     const status = await dashboard(ctx, login, "GetSandUsageStatus");
     if (status.hasNonZeroIncludedLimit === false || Object.keys(status).length === 0) {
       return { windows: [], unavailable: "This account has no Grok Bot allowance." };
