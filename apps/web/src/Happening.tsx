@@ -8,6 +8,7 @@ export interface Item {
   detail: string | null;
   status: string;
   at: string;
+  startedAt?: string | null;
   jobId?: string | null;
   externalId?: string | null;
   options?: string[] | null;
@@ -122,7 +123,8 @@ function Card({ it, onChanged, onOpenJob, onOpenExternal, onError }: { it: Item;
     <button className="card external clickable" onClick={() => onOpenExternal(it.id)}>
       <div className="tag">
         <span className={`dot ${it.status}`} /> {it.source === "handoff" ? "Handoff" : it.source === "github_issue" ? "Issue" : "Cloud agent"} · {it.status}
-        {it.machine ? ` · ${it.machine}` : ""} · {ago(it.at)}
+        {it.machine ? ` · ${it.machine}` : ""}
+        {it.status === "running" && it.startedAt ? ` · started ${ago(it.startedAt)} · updated ${ago(it.at)}` : ` · ${ago(it.at)}`}
       </div>
       <div className="body">{it.title}</div>
       {it.detail && <div className="detail clip">{it.detail}</div>}

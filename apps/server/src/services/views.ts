@@ -13,6 +13,7 @@ export interface HappeningItem {
   detail: string | null;
   status: string;
   at: Date;
+  startedAt?: Date | null;
   jobId?: string | null;
   externalId?: string | null;
   options?: string[] | null;
@@ -69,7 +70,7 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
     });
   for (const w of external)
     add(w.project_id, {
-      kind: "external", id: w.id, title: w.title, detail: lastActivity(w.detail) ?? w.summary, status: w.status, at: w.updated_at, externalId: w.id,
+      kind: "external", id: w.id, title: w.title, detail: lastActivity(w.detail) ?? w.summary, status: w.status, at: w.updated_at, startedAt: w.started_at, externalId: w.id,
       machine: w.machine, url: w.url, source: w.source,
     });
 
