@@ -135,6 +135,28 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await ok(ui, "GET", `/api/jobs/${job.id}`)).status, "cancelled");
   });
 
+  test("cloudroom jobs go only to a machine that has Cloudroom for that agent", async () => {
+    const bad = await call(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "x", provider: "ollama", runner: "cloudroom" });
+    assert.equal(bad.status, 400);
+    const job = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Try it in the cloud", runner: "cloudroom" });
+    assert.equal(job.runner, "cloudroom");
+    assert.equal(job.cloudroom.branch, `opnav/${job.id.slice(0, 8)}`);
+    // A plain claude claim doesn't take it.
+    assert.equal((await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns.length, 0);
+    await ok(node2, "POST", "/api/node/heartbeat", { ...hb("studio"), cloudroom: { providers: ["claude", "codex"] } });
+    const machines = await ok(ui, "GET", "/api/machines");
+    assert.deepEqual(machines.find((m: any) => m.name === "studio").cloudroom.providers, ["claude", "codex"]);
+    const [t] = (await ok(node2, "POST", "/api/node/jobs/claim", { providers: ["claude"], cloudroomProviders: ["claude"] })).turns;
+    assert.equal(t.job.id, job.id);
+    assert.equal(t.job.runner, "cloudroom");
+    await ok(node2, "POST", `/api/node/jobs/${job.id}/events`, { leaseId: t.leaseId, events: [
+      { seq: 0, at: now(), type: "session", providerSessionId: "thr_test1" },
+      { seq: 1, at: now(), type: "result", summary: "Pushed opnav branch" }] });
+    const done = await ok(ui, "GET", `/api/jobs/${job.id}`);
+    assert.equal(done.status, "succeeded");
+    assert.equal(done.cloudroom.thread, "thr_test1");
+  });
+
   test("usage: deduped by account; a failure never wipes a good reading", async () => {
     const acct = key("claude-account-123");
     const good = {

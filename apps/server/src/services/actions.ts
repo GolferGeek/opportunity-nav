@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Location, ProviderId } from "@opnav/shared";
+import { Location, ProviderId, Runner } from "@opnav/shared";
 import type { Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { answerQuestion, cancelJob, createJob, getJob } from "./jobs.ts";
@@ -83,7 +83,7 @@ export const actions = {
     run: (sql: Sql, userId: string, i: any, by: string) => answerQuestion(sql, userId, i.questionId, i.answer, by),
   },
   start_job: {
-    description: "Start an agent on a task in a project. Provider, model and local-or-cloud default to the project's settings.",
+    description: "Start an agent on a task in a project. Provider, model and local-or-cloud default to the project's settings. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch).",
     input: z.object({
       item: Ref.describe("The project (or an item inside it) to work on"),
       prompt: z.string().min(1),
@@ -92,6 +92,7 @@ export const actions = {
       model: z.string().optional(),
       location: Location.optional(),
       effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+      runner: Runner.optional().describe("direct (default): on one of the person's machines. cloudroom: in Cloudroom's cloud."),
     }),
     run: async (sql: Sql, userId: string, i: any, by: string) => {
       const node = await resolveRef(sql, userId, i.item);
