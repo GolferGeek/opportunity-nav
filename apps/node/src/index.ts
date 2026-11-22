@@ -55,6 +55,8 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   const detectCloudroom = cloudroomDetector(sys);
   let time = { heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC, usageIntervalSec: DEFAULT_USAGE_INTERVAL_SEC };
   let registered = false;
+  // "Check now" from the dashboard wakes the usage loop early.
+  let usageWake = new AbortController();
   let providers: ProviderCapability[] = [];
   let activeJobId: string | undefined;
   let handoff: string | undefined;
@@ -62,7 +64,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   const configured = options.handoffDir === false ? undefined : localPath(sys, options.handoffDir ?? "~/Work/handoff");
   const roots = options.checkoutRoots ?? ["~/Projects", "~/projects"];
   const wait = (ms: number) => sleep(ms, undefined, { signal }).catch(() => {});
-  async function loop(label: string, operation: () => Promise<number>, fallback: number) {
+  async function loop(label: string, operation: () => Promise<number>, fallback: number, wake?: () => AbortSignal) {
     let failed = false;
     while (!signal.aborted) {
       let interval = fallback;
@@ -73,7 +75,13 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
         if (!signal.aborted && !failed) report(`Could not ${label}. Retrying.`);
         failed = true;
       }
-      await wait(interval);
+      if (wake) {
+        const early = wake();
+        await sleep(interval, undefined, { signal: AbortSignal.any([signal, early]) }).catch(() => {});
+        if (early.aborted) usageWake = new AbortController();
+      } else {
+        await wait(interval);
+      }
     }
   }
 
@@ -90,7 +98,9 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
         arch: arch(), autonomy, helperVersion: version, providers: detected, checkouts: discovered,
         cloudroom: cloudroom && { providers: cloudroom.providers },
         handoff: handoff ? { dir: handoff } : undefined, activeJobIds: activeJobId ? [activeJobId] : [] });
-      time = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
+      const answer = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
+      time = answer;
+      if (answer.checkUsageNow) usageWake.abort();
       providers = detected;
       registered = true;
       return time.heartbeatIntervalSec * 1000;
@@ -100,7 +110,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       const { report: usage, retry } = await collect();
       if (usage.accounts.length) await post(NODE.usage, usage);
       return retry ? Math.min(time.usageIntervalSec * 1000, 60_000) : time.usageIntervalSec * 1000;
-    }, 10_000),
+    }, 10_000, () => usageWake.signal),
     loop("upload handoff work", async () => {
       if (!registered) return 250;
       if (!handoff) return options.externalIntervalMs ?? 60_000;

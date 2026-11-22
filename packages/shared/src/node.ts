@@ -62,5 +62,7 @@ export const NodeHeartbeatResponse = z.object({
   serverTime: IsoTime,
   usageIntervalSec: z.number().int().positive(),
   heartbeatIntervalSec: z.number().int().positive(),
+  /** The person pressed "Check now": read subscription usage right away. */
+  checkUsageNow: z.boolean().default(false),
 });
 export type NodeHeartbeatResponse = z.infer<typeof NodeHeartbeatResponse>;

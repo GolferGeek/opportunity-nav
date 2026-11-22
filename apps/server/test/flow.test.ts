@@ -174,6 +174,14 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await ok(ui, "GET", "/api/dashboard")).totalMonthlyUsd, 200);
   });
 
+  test("check now: online machines read usage at their next heartbeat, once", async () => {
+    const r = await ok(ui, "POST", "/api/usage/check");
+    assert.ok(r.machines >= 1);
+    assert.equal((await ok(node, "POST", "/api/node/heartbeat", hb("laptop"))).checkUsageNow, true);
+    assert.equal((await ok(node, "POST", "/api/node/heartbeat", hb("laptop"))).checkUsageNow, false);
+    assert.equal((await call(node, "POST", "/api/usage/check")).status, 403);
+  });
+
   test("handoff work shows under its project, with its questions", async () => {
     await ok(node2, "POST", "/api/node/external", {
       items: [{ source: "handoff", externalId: "2026-11-22-x.md", title: "Fix login", status: "running", repo: "/home/studio/Projects/opportunity-nav", questions: ["Ship it?"], updatedAt: now() }],

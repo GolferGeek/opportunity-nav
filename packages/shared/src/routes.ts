@@ -19,5 +19,5 @@ export const NODE = {
 } as const;
 
 export const LEASE_SECONDS = 120;
-export const DEFAULT_USAGE_INTERVAL_SEC = 900;
+export const DEFAULT_USAGE_INTERVAL_SEC = 300;
 export const DEFAULT_HEARTBEAT_INTERVAL_SEC = 30;

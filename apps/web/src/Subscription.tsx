@@ -1,7 +1,8 @@
 import { ago, api, providerName, until, usePoll } from "./api.ts";
+import { CheckNow } from "./Dashboard.tsx";
 
 export function SubscriptionPanel({ id, onClose, onChanged, onError }: { id: string; onClose: () => void; onChanged: () => void; onError: (m: string) => void }) {
-  const { data: s } = usePoll<any>(`/api/subscriptions/${id}`, 15_000);
+  const { data: s, reload } = usePoll<any>(`/api/subscriptions/${id}`, 15_000);
   const limits = (s?.windows ?? []).filter((w: any) => w.unit !== "tokens");
   const tokens = (s?.windows ?? []).filter((w: any) => w.unit === "tokens");
   return (
@@ -15,7 +16,9 @@ export function SubscriptionPanel({ id, onClose, onChanged, onError }: { id: str
         <>
           <div className="facts muted">
             {[s.plan, s.label].filter(Boolean).join(" · ") || "Plan unknown"}
-            {s.fetchedAt ? ` · checked ${ago(s.fetchedAt)}` : ""}{s.machine ? ` by ${s.machine}` : ""}
+            {s.machine ? ` · read by ${s.machine}` : ""}
+            <span className="spacer" />
+            <CheckNow newest={s.fetchedAt} onChanged={() => { reload(); onChanged(); }} onError={onError} />
           </div>
           {s.status !== "ok" && <p className="sub-status">{s.message ?? s.status}</p>}
           <h4>Limits</h4>

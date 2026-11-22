@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ago, api, providerName, until } from "./api.ts";
 
 export interface Dash {
@@ -29,7 +29,11 @@ export function Dashboard({ dash, onChanged, onSelect, onOpenSub, onError }: { d
   return (
     <section className="pane">
       <h2>Dashboard</h2>
-      <h4>Subscriptions {dash.totalMonthlyUsd > 0 && <span className="muted"> · ${dash.totalMonthlyUsd.toFixed(0)}/month</span>}</h4>
+      <h4 className="row-head">
+        <span>Subscriptions {dash.totalMonthlyUsd > 0 && <span className="muted"> · ${dash.totalMonthlyUsd.toFixed(0)}/month</span>}</span>
+        <span className="spacer" />
+        <CheckNow newest={newestCheck(dash.subscriptions)} onChanged={onChanged} onError={onError} />
+      </h4>
       {dash.subscriptions.length === 0 && (
         <p className="muted">No subscriptions yet.<br />Connect a machine in Settings and its agents appear here.</p>
       )}
@@ -99,5 +103,44 @@ function Cost({ id, value, onChanged, onError }: { id: string; value: number | n
   return (
     <input className="cost-input" autoFocus inputMode="decimal" value={v} placeholder="$/month" onChange={(e) => setV(e.target.value)}
       onBlur={() => void save()} onKeyDown={(e) => e.key === "Enter" && void save()} />
+  );
+}
+
+/** The most recent time any subscription was read. */
+export function newestCheck(subs: { fetchedAt: string | null }[]): string | null {
+  return subs.reduce<string | null>((a, s) => (s.fetchedAt && (!a || s.fetchedAt > a) ? s.fetchedAt : a), null);
+}
+
+/**
+ * Usage is read every 5 minutes. "Check now" asks every online machine to read
+ * it at its next heartbeat (within about 30 seconds) and refreshes until it lands.
+ */
+export function CheckNow({ newest, onChanged, onError }: { newest: string | null; onChanged: () => void; onError: (m: string) => void }) {
+  const [since, setSince] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setInterval>>(undefined);
+  const stop = () => { clearInterval(timer.current); timer.current = undefined; setSince(null); };
+  useEffect(() => { if (since && newest && newest > since) stop(); }, [newest, since]);
+  useEffect(() => () => clearInterval(timer.current), []);
+  const go = async () => {
+    try {
+      const r = await api<{ machines: number; requestedAt: string }>("POST", "/api/usage/check");
+      if (r.machines === 0) return onError("No machine is online to check usage.");
+      setSince(r.requestedAt);
+      const started = Date.now();
+      clearInterval(timer.current);
+      timer.current = setInterval(() => {
+        if (Date.now() - started > 90_000) stop();
+        else onChanged();
+      }, 3000);
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
+  return (
+    <span className="check-now muted small">
+      {newest ? `checked ${ago(newest)} · ` : ""}
+      <button type="button" className="quietbtn" disabled={!!since} onClick={(e) => { e.stopPropagation(); void go(); }}
+        title="Usage is read every 5 minutes. This reads it now.">{since ? "Checking…" : "Check now"}</button>
+    </span>
   );
 }

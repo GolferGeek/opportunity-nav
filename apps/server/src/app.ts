@@ -77,8 +77,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     };
     r.post(NODE.heartbeat, async (req) => {
       const nodeId = await heartbeat(sql, req.principal.userId, req.principal.tokenId, NodeHeartbeat.parse(req.body));
+      const asked = await sql`update nodes set usage_requested_at = null
+        where id = ${nodeId} and usage_requested_at is not null returning id`;
       return {
         nodeId,
+        checkUsageNow: asked.length > 0,
         serverTime: new Date().toISOString(),
         usageIntervalSec: DEFAULT_USAGE_INTERVAL_SEC,
         heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC,
@@ -138,6 +141,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         repo: w.repo, url: w.url, summary: w.summary, machine: w.machine, updatedAt: w.updated_at, startedAt: w.started_at,
         gone: !!w.gone_at, detail: w.detail ?? {}, questions,
       };
+    });
+    // "Check now": every online machine reads usage at its next heartbeat (within about 30 seconds).
+    r.post("/api/usage/check", async (req) => {
+      const rows = await sql`update nodes n set usage_requested_at = now() from api_tokens t
+        where t.id = n.token_id and t.revoked_at is null and n.user_id = ${req.principal.userId}
+          and n.last_seen_at > now() - interval '2 minutes' returning n.id`;
+      return { machines: rows.length, requestedAt: new Date().toISOString() };
     });
     r.get("/api/subscriptions/:id", async (req) => {
       const [s] = await sql`select s.*, n.name as machine from subscriptions s left join nodes n on n.id = s.reported_by
