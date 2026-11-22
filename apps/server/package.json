@@ -1,0 +1,21 @@
+{
+  "name": "@opnav/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "opnav-server": "src/main.ts", "opnav-admin": "src/admin.ts" },
+  "scripts": {
+    "start": "node --env-file-if-exists=../../.env src/main.ts",
+    "dev": "node --watch --env-file-if-exists=../../.env src/main.ts",
+    "admin": "node --env-file-if-exists=../../.env src/admin.ts"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.0.0",
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "@opnav/shared": "*",
+    "fastify": "^5.4.0",
+    "postgres": "^3.4.0",
+    "zod": "^3.25.0",
+    "zod-to-json-schema": "^3.24.0"
+  }
+}
