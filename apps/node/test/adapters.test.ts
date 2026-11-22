@@ -195,7 +195,7 @@ test("Cursor reads cursor-agent's sign-in from the Secret Service when auth.json
   assert.equal(accounts.find(a => a.provider === "grokbot")?.windows[0]?.used, 3);
 });
 
-test("Grok Bot reads the Grok Bot app's own sign-in on macOS, or says how to allow it", async t => {
+test("Grok Bot reads the Grok Bot app's own sign-in on macOS, or says how to allow it; Cursor falls back to it", async t => {
   const { home, save } = await workspace(t);
   const bin = join(home, "bin");
   const subject = "google-oauth2|user_grokbot";
@@ -209,10 +209,15 @@ test("Grok Bot reads the Grok Bot app's own sign-in on macOS, or says how to all
   await save("Library/Application Support/Grok Bot/sand-secrets.json", { version: 1, "cursor-accounts": JSON.stringify({
     active, accounts: { [active]: { "cursor-access-token": encrypt(token), "cursor-refresh-token": encrypt("fixture-refresh") } },
   }) });
+  // The saved Cursor sign-in for the same account has been revoked; the Grok Bot app's still works.
+  const revoked = fixtureJwt({ sub: subject, exp: Date.now() / 1000 + 3600, revoked: true });
+  await save(".config/cursor/auth.json", { accessToken: revoked });
   const fetch = async (url: string | URL | Request, init?: RequestInit) => {
-    assert.equal(new Headers(init?.headers).get("Authorization"), `Bearer ${token}`);
-    assert.match(String(url), /GetSandUsageStatus$/);
-    return Response.json({ hasNonZeroIncludedLimit: true, usagePercent: 42 });
+    if (new Headers(init?.headers).get("Authorization") !== `Bearer ${token}`) return new Response(null, { status: 401 });
+    const method = String(url).split("/").at(-1);
+    if (method === "GetSandUsageStatus") return Response.json({ hasNonZeroIncludedLimit: true, usagePercent: 42 });
+    if (method === "GetCurrentPeriodUsage") return Response.json({ planUsage: { totalPercentUsed: 28 } });
+    return Response.json({});
   };
 
   await fakeCommand(bin, "security", "exit 1\n");
@@ -221,10 +226,15 @@ test("Grok Bot reads the Grok Bot app's own sign-in on macOS, or says how to all
   const waiting = denied.accounts.find(a => a.provider === "grokbot");
   assert.equal(waiting?.status, "auth_required");
   assert.match(waiting?.message ?? "", /Always Allow/);
+  assert.equal(denied.accounts.find(a => a.provider === "cursor")?.status, "auth_required");
 
   await fakeCommand(bin, "security", `[ "$*" = "find-generic-password -s Grok Bot Safe Storage -a Grok Bot Key -w" ] && echo fixture-password\n`);
   const { accounts } = await readUsage({ system: { home, env: { PATH: bin }, platform: "darwin" }, fetch });
   const account = accounts.find(a => a.provider === "grokbot");
   assert.equal(account?.status, "ok");
   assert.equal(account?.windows[0]?.used, 42);
+  const cursor = accounts.find(a => a.provider === "cursor");
+  assert.equal(cursor?.status, "ok");
+  assert.equal(cursor?.windows[0]?.used, 28);
+  assert.equal(cursor?.accountKey, account?.accountKey);
 });

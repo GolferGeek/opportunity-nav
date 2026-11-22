@@ -34,14 +34,19 @@ export function decryptSafeStorage(value: unknown, key: Buffer): string | undefi
   }
 }
 
-/** The Grok Bot app's own Cursor sign-in, read-only. Falls back to the Cursor sign-in. */
+/** The Grok Bot app's own Cursor sign-in on macOS, read-only. Falls back to the Cursor sign-in. */
 export async function grokbotLogin(sys: System): Promise<Login | undefined> {
-  if (sys.platform !== "darwin") return cursorLogin(sys);
+  return await grokbotApp(sys) ?? cursorLogin(sys);
+}
+
+/** Undefined when the Grok Bot app has no saved sign-in on this machine. */
+export async function grokbotApp(sys: System): Promise<Login | undefined> {
+  if (sys.platform !== "darwin") return;
   const secrets = await json(join(sys.home, "Library/Application Support/Grok Bot/sand-secrets.json"));
   const store = parse(string(secrets["cursor-accounts"]) ?? "");
   const accounts = object(store.accounts);
   const entry = object(accounts[string(store.active) ?? ""] ?? Object.values(accounts)[0]);
-  if (!string(entry["cursor-access-token"]) && !string(entry["cursor-refresh-token"])) return cursorLogin(sys);
+  if (!string(entry["cursor-access-token"]) && !string(entry["cursor-refresh-token"])) return;
   const key = await safeStorageKey(sys);
   if (!key) {
     // Grok Bot names each account by the SHA-256 of its Cursor subject, so the card keeps its identity.
@@ -52,7 +57,7 @@ export async function grokbotLogin(sys: System): Promise<Login | undefined> {
   }
   const token = decryptSafeStorage(entry["cursor-access-token"], key);
   const refreshToken = decryptSafeStorage(entry["cursor-refresh-token"], key);
-  if (!token && !refreshToken) return cursorLogin(sys);
+  if (!token && !refreshToken) return;
   const claims = jwt(token ?? refreshToken);
   return { token, refreshToken, id: string(claims.sub)?.split("|").at(-1) ?? string(store.active),
     expiresAt: token ? timestamp(claims.exp) : undefined, refreshExpiresAt: timestamp(jwt(refreshToken).exp) };

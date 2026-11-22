@@ -63,6 +63,10 @@ export async function cursorLogin(sys: System): Promise<Login | undefined> {
   };
 }
 
+function refused() {
+  return new AuthRequired("Cursor refused the saved sign-in. Sign in to the Cursor editor, or run `cursor-agent login`.");
+}
+
 export function dashboard(ctx: UsageContext, login: Login, method: string, body: object = {}) {
   return request(ctx, `https://api2.cursor.sh/aiserver.v1.DashboardService/${method}`, login, body, {
     "Connect-Protocol-Version": "1", "x-cursor-client-type": "cli",
@@ -109,14 +113,22 @@ export const cursor: Adapter = {
     if (login.credential && !login.token && !login.refreshToken) {
       return { windows: [], unavailable: "Cursor API key sign-ins have no subscription limits." };
     }
-    const [period, response] = await Promise.all([
-      dashboard(ctx, login, "GetCurrentPeriodUsage"),
-      dashboard(ctx, login, "GetPlanInfo"),
-    ]).catch(error => {
-      if (error instanceof AuthRequired && error.message === "refused") {
-        throw new AuthRequired("Cursor refused the saved sign-in. Sign in to the Cursor editor, or run `cursor-agent login`.");
+    const fetchUsage = (with_: Login) => Promise.all([
+      dashboard(ctx, with_, "GetCurrentPeriodUsage"),
+      dashboard(ctx, with_, "GetPlanInfo"),
+    ]);
+    const [period, response] = await fetchUsage(login).catch(async error => {
+      if (!(error instanceof AuthRequired && error.message === "refused")) throw error;
+      // On a Mac the Grok Bot app holds a live Cursor sign-in too. Use it only for the same account.
+      const { grokbotApp } = await import("./grokbot.ts");
+      const app = await grokbotApp(ctx.sys);
+      if (app?.token && (app.id === login.id || !login.token)) {
+        login = { ...app, id: login.id ?? app.id };
+        return fetchUsage(login).catch(retry => {
+          throw retry instanceof AuthRequired && retry.message === "refused" ? refused() : retry;
+        });
       }
-      throw error;
+      throw refused();
     });
     const plan = object(response.planInfo ?? response);
     const weekly = plan.includedUsagePeriod === 2 || /^(INCLUDED_USAGE_PERIOD_)?WEEKLY$/i.test(string(plan.includedUsagePeriod) ?? "");
