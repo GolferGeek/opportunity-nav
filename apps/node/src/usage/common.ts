@@ -4,7 +4,10 @@ import { number, parse, timestamp } from "../system.ts";
 import type { System } from "../system.ts";
 
 export interface Login {
+  /** The account's own id or email: the same on every machine signed in to it. */
   id?: string;
+  /** Ids an older helper keyed this account on, if different (reported as aliases). */
+  formerIds?: string[];
   token?: string;
   plan?: string;
   expiresAt?: string;

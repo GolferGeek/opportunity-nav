@@ -289,3 +289,51 @@ test("Cursor never borrows the Grok Bot app's sign-in for a different account", 
   assert.equal(cursor?.status, "auth_required");
   assert.ok(!cursor?.windows.some(w => w.used === 99), "the other account's usage isn't shown on this card");
 });
+
+const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+
+test("Antigravity keys on the Google account's email, so every machine reports one card", async t => {
+  const quota = (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith("loadCodeAssist")) return Response.json({ paidTier: { name: "Google AI Ultra" } });
+    if (url.endsWith("retrieveUserQuotaSummary")) return Response.json({ buckets: [{ bucketId: "weekly", remainingFraction: 0.75 }] });
+    throw new Error(`unexpected ${url}`);
+  };
+  const keys = [];
+  for (const machine of ["studio", "laptop"]) {
+    const { home, save } = await workspace(t);
+    // What Antigravity saves: no id_token, only the email beside a machine-local token.
+    await save(".gemini/antigravity-cli/antigravity-oauth-token", {
+      token: { access_token: `${machine}-access`, refresh_token: `${machine}-refresh`, expiry: new Date(Date.now() + 3600e3).toISOString() },
+      id_token_email: "Person@Example.com",
+    });
+    const { accounts } = await readUsage({ system: { home, env: {}, platform: "linux" }, fetch: async input => quota(input) });
+    const agy = accounts.find(a => a.provider === "agy")!;
+    assert.equal(agy.status, "ok");
+    assert.equal(agy.accountKey, sha("person@example.com"));
+    assert.deepEqual(agy.aliases, [sha(`${machine}-refresh`)], "the old machine-local key, so the server folds that card in");
+    keys.push(agy.accountKey);
+  }
+  assert.equal(keys[0], keys[1]);
+});
+
+test("an account learned from a good reading keeps its key when the next reading is stale", async t => {
+  const { home, save } = await workspace(t);
+  const file = ".gemini/antigravity-cli/antigravity-oauth-token";
+  await save(file, { token: { access_token: "access", refresh_token: "refresh", expiry: new Date(Date.now() + 3600e3).toISOString() } });
+  const fetch = async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("userinfo")) return Response.json({ sub: "1234", email: "person@example.com" });
+    if (url.endsWith("loadCodeAssist")) return Response.json({});
+    return Response.json({ buckets: [{ bucketId: "weekly", remainingFraction: 0.5 }] });
+  };
+  const system = { home, env: {}, platform: "linux" as const };
+  const fresh = (await readUsage({ system, fetch })).accounts.find(a => a.provider === "agy")!;
+  assert.equal(fresh.accountKey, sha("person@example.com"));
+  // The access token runs out; Antigravity hasn't been started since.
+  await save(file, { token: { access_token: "access", refresh_token: "refresh", expiry: "2000-01-01" } });
+  const stale = (await readUsage({ system, fetch })).accounts.find(a => a.provider === "agy")!;
+  assert.equal(stale.status, "stale");
+  assert.equal(stale.accountKey, fresh.accountKey);
+  assert.deepEqual(stale.windows.map(w => w.used), [50], "last good reading is kept");
+});

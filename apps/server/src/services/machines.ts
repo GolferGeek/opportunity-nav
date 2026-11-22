@@ -52,8 +52,25 @@ export async function ingestUsage(sql: Sql, userId: string, machineId: string, r
   return sql.begin(async (tx) => {
     for (const a of report.accounts) {
       const fetchedAt = a.fetchedAt ?? (a.status === "ok" ? report.observedAt : null);
-      const [cur] = await tx`select id, status, fetched_at from subscriptions
-        where user_id = ${userId} and provider = ${a.provider} and account_key = ${a.accountKey} for update`;
+      const card = async (key: string) => (await tx`select id, status, fetched_at, merged_into from subscriptions
+        where user_id = ${userId} and provider = ${a.provider} and account_key = ${key} for update`)[0];
+      let cur = await card(a.accountKey);
+      // A key that was folded into another card reports to that card.
+      if (cur?.merged_into) cur = (await tx`select id, status, fetched_at, merged_into from subscriptions
+        where id = ${cur.merged_into} and user_id = ${userId} for update`)[0] ?? cur;
+      // Fold in cards this account was reported under before (older, machine-local keys).
+      for (const alias of a.aliases ?? []) {
+        const old = await card(alias);
+        if (!old || old.merged_into || old.id === cur?.id) continue;
+        if (!cur) {
+          // Nothing under the new key yet: the old card carries on under it.
+          await tx`update subscriptions set account_key = ${a.accountKey} where id = ${old.id}`;
+          cur = old;
+        } else {
+          await mergeSubscriptions(tx, userId, old.id, cur.id);
+          cur = (await tx`select id, status, fetched_at, merged_into from subscriptions where id = ${cur.id}`)[0];
+        }
+      }
       const curFetched = cur?.fetched_at ? new Date(cur.fetched_at).getTime() : 0;
       const incomingFetched = fetchedAt ? new Date(fetchedAt).getTime() : 0;
       const hasNewerWindows = a.windows.length > 0 && incomingFetched > curFetched;
@@ -81,6 +98,33 @@ export async function ingestUsage(sql: Sql, userId: string, machineId: string, r
     }
     return report.accounts.length;
   });
+}
+
+/**
+ * Fold one subscription card into another for the same provider: the newer good
+ * reading wins, the cost and label carry over if the survivor has none, and the
+ * old card is hidden and points at the survivor. Nothing is deleted.
+ */
+export async function mergeSubscriptions(db: Db, userId: string, fromId: string, intoId: string) {
+  if (fromId === intoId) throw new Error("A card can't be merged into itself.");
+  const rows = await db`select * from subscriptions where user_id = ${userId} and id in ${db([fromId, intoId])} for update`;
+  const from = rows.find((r) => r.id === fromId), into = rows.find((r) => r.id === intoId);
+  if (!from || !into) throw new Error("No such subscription.");
+  if (from.provider !== into.provider) throw new Error("Only cards for the same provider can be merged.");
+  if (into.merged_into) throw new Error("That card was itself merged; merge into the card it points at.");
+  const t = (v: unknown) => (v ? new Date(v as string).getTime() : 0);
+  if (t(from.fetched_at) > t(into.fetched_at)) {
+    await db`delete from usage_windows where subscription_id = ${intoId}`;
+    await db`update usage_windows set subscription_id = ${intoId} where subscription_id = ${fromId}`;
+    await db`update subscriptions set status = ${from.status}, message = ${from.message}, fetched_at = ${from.fetched_at},
+      observed_at = greatest(observed_at, ${from.observed_at}), reported_by = ${from.reported_by}, plan = coalesce(${from.plan}, plan)
+      where id = ${intoId}`;
+  }
+  await db`update subscriptions set monthly_cost_usd = coalesce(monthly_cost_usd, ${from.monthly_cost_usd}),
+    label = coalesce(label, ${from.label}) where id = ${intoId}`;
+  await db`update subscriptions set hidden = true, merged_into = ${intoId} where id = ${fromId}`;
+  // Anything already folded into the old card follows it.
+  await db`update subscriptions set merged_into = ${intoId} where merged_into = ${fromId}`;
 }
 
 /** Upsert handoff tasks, issues and cloud agents; attach them to projects by repo; lift their questions. */

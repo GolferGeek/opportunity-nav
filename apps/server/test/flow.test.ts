@@ -10,6 +10,7 @@ import { connect, migrate, type Sql } from "../src/db.ts";
 import { buildApp } from "../src/app.ts";
 import { createToken } from "../src/auth.ts";
 import { expireLeases } from "../src/services/jobs.ts";
+import { mergeSubscriptions } from "../src/services/machines.ts";
 
 const url = process.env.OPNAV_TEST_DATABASE_URL;
 const key = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -121,6 +122,40 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.match(dash.projects.find((p: any) => p.id === projectId).line, /Last done: Added \/healthz/);
   });
 
+  test("a refused tool is logged on the job; only a job that fails opens a roadblock", async () => {
+    const ev = (seq: number, e: object) => ({ seq, at: now(), ...e });
+    const run = async (prompt: string) => {
+      const job = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt });
+      const [t] = (await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns;
+      assert.equal(t.job.id, job.id);
+      return { job, t };
+    };
+    const open = async (jobId: string) => (await sql`select body from roadblocks where job_id = ${jobId} and status = 'open'`).map((r) => r.body);
+
+    // Refused one tool, finished another way: nothing for the person to do.
+    const a = await run("Refused a tool, then succeeded");
+    await ok(node, "POST", `/api/node/jobs/${a.job.id}/events`, { leaseId: a.t.leaseId, events: [
+      ev(0, { type: "progress", text: "Working" }), ev(1, { type: "blocked", text: "Claude could not get permission to run WebFetch." })] });
+    assert.deepEqual(await open(a.job.id), [], "a refusal alone is not a roadblock");
+    const [u] = await sql`select user_id from jobs where id = ${a.job.id}`;
+    await sql`insert into roadblocks (user_id, project_id, job_id, body) values (${u!.user_id}, ${projectId}, ${a.job.id}, 'Opened earlier')`;
+    await ok(node, "POST", `/api/node/jobs/${a.job.id}/events`, { leaseId: a.t.leaseId, events: [
+      ev(2, { type: "result", summary: "Done another way" })] });
+    assert.deepEqual(await open(a.job.id), [], "success clears the job's roadblocks");
+    const detail = await ok(ui, "GET", `/api/jobs/${a.job.id}`);
+    assert.equal(detail.status, "succeeded");
+    assert.ok(JSON.stringify(detail).includes("permission to run WebFetch"), "the refusal stays on the job's log");
+    assert.ok(!(await ok(ui, "GET", "/api/happening")).some((g: any) => g.items.some((i: any) => i.kind === "roadblock" && i.jobId === a.job.id)));
+
+    // Refused a tool and then failed: a roadblock with the real reason.
+    const b = await run("Refused a tool, then failed");
+    await ok(node, "POST", `/api/node/jobs/${b.job.id}/events`, { leaseId: b.t.leaseId, events: [
+      ev(0, { type: "blocked", text: "Claude could not get permission to run Bash." }),
+      ev(1, { type: "error", code: "provider_error", message: "Tests still fail.", retryable: false })] });
+    assert.equal((await ok(ui, "GET", `/api/jobs/${b.job.id}`)).status, "failed");
+    assert.deepEqual(await open(b.job.id), ["Tests still fail.\nClaude could not get permission to run Bash."]);
+  });
+
   test("lost lease requeues to any machine; cancel stops it", async () => {
     const job = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Long thing" });
     const [t] = (await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns;
@@ -172,6 +207,46 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal(d.subscriptions[0].windows[0].percent, 9);
     await ok(ui, "PATCH", `/api/subscriptions/${d.subscriptions[0].id}`, { monthlyCostUsd: 200 });
     assert.equal((await ok(ui, "GET", "/api/dashboard")).totalMonthlyUsd, 200);
+  });
+
+  test("usage: one card per account, even when older helpers keyed it per machine", async () => {
+    const studioOld = key("studio-refresh"), laptopOld = key("laptop-refresh"), stable = key("person@example.com");
+    const weekly = (used: number) => [{ id: "weekly", label: "Weekly", kind: "weekly", unit: "percent", used }];
+    const report = (accountKey: string, status: string, used: number, extra: object = {}) => ({ observedAt: now(),
+      accounts: [{ provider: "agy", accountKey, plan: "Google AI Ultra", status, fetchedAt: status === "ok" ? now() : new Date(Date.now() - 3600e3).toISOString(), windows: weekly(used), ...extra }] });
+    const cards = async () => (await ok(ui, "GET", "/api/dashboard")).subscriptions.filter((s: any) => s.provider === "agy");
+
+    // Old helpers: two machines, two keys, two cards.
+    await ok(node2, "POST", "/api/node/usage", report(studioOld, "stale", 10));
+    await ok(node, "POST", "/api/node/usage", report(laptopOld, "ok", 20));
+    assert.equal((await cards()).length, 2);
+    await ok(ui, "PATCH", `/api/subscriptions/${(await cards()).find((c: any) => c.status === "stale").id}`, { monthlyCostUsd: 250 });
+
+    // The Studio's new helper reports the stable key and its old one: that card carries on under the new key.
+    await ok(node2, "POST", "/api/node/usage", report(stable, "stale", 10, { aliases: [studioOld] }));
+    assert.equal((await cards()).length, 2);
+    // Fold the laptop's old card in by hand (what `opnav-admin merge-usage` does).
+    const [survivor] = await sql`select id, user_id from subscriptions where provider = 'agy' and account_key = ${stable}`;
+    const [dup] = await sql`select id from subscriptions where provider = 'agy' and account_key = ${laptopOld}`;
+    await sql.begin((tx) => mergeSubscriptions(tx, survivor!.user_id, dup!.id, survivor!.id));
+    let c = await cards();
+    assert.equal(c.length, 1, "one card");
+    assert.equal(c[0].status, "ok", "the freshest good reading wins");
+    assert.equal(c[0].windows[0].percent, 20);
+    assert.equal(c[0].monthlyCostUsd, 250, "cost carries over");
+
+    // The laptop's old helper still reports under its old key: it lands on the same card.
+    await ok(node, "POST", "/api/node/usage", report(laptopOld, "ok", 30));
+    c = await cards();
+    assert.equal(c.length, 1);
+    assert.equal(c[0].windows[0].percent, 30);
+    // A stale report from the other machine doesn't hide a fresh one.
+    await ok(node2, "POST", "/api/node/usage", report(stable, "stale", 10, { aliases: [studioOld] }));
+    c = await cards();
+    assert.equal(c[0].status, "ok");
+    assert.equal(c[0].windows[0].percent, 30);
+    const [kept] = await sql`select hidden, merged_into from subscriptions where id = ${dup!.id}`;
+    assert.deepEqual([kept!.hidden, kept!.merged_into], [true, survivor!.id], "old card is hidden, not deleted");
   });
 
   test("check now: online machines read usage at their next heartbeat, once", async () => {

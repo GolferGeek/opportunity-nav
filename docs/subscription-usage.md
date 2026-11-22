@@ -38,6 +38,14 @@ So Opportunity Nav needs a **small usage reporter on each machine** where the ag
 
 Gemini CLI isn't read any more: personal Google accounts moved to Antigravity (`agy`).
 
+### One card per account
+
+Each card is keyed on the account itself (its id or email), never on a sign-in, so every machine signed in to the same account reports the same card.
+Antigravity often saves no id_token, only `id_token_email` beside the token; the helper keys on that email.
+When an adapter learns the account only from a reading (Grok, or Antigravity without an email), the helper remembers it per sign-in (`~/.local/state/opnav/usage/identity-*.json`, a hash of the sign-in, never the sign-in) so a later stale reading keeps the same key.
+A report can name older keys (`aliases`); the server folds those cards into this one. A folded card is hidden and points at the survivor (`merged_into`), so reports from older helpers still land on the right card. Nothing is deleted.
+To fold a duplicate by hand: `node --env-file=~/.config/opportunity-nav/server.env apps/server/src/admin.ts merge-usage --from <id> --into <id>`.
+
 ## Risks
 
 - **The Claude, Cursor, Grok and Cloud Code endpoints aren't documented public APIs.** They're what the providers' own tools call, so they can change without notice. Keep each one behind its own adapter so one breaking doesn't take down the rest.

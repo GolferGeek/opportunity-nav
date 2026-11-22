@@ -3,15 +3,18 @@
  *   opnav-admin setup --name "Matt"         first user + a UI sign-in link
  *   opnav-admin token --role node --label "Mac Studio" [--user <id>]
  *   opnav-admin signin [--user <id>]        a new UI sign-in link
+ *   opnav-admin merge-usage --from <id> --into <id>   fold a duplicate subscription card into another
  * Tokens are printed once, to this terminal only.
  */
 import { parseArgs } from "node:util";
 import { connect, migrate } from "./db.ts";
 import { createToken, type Role } from "./auth.ts";
+import { mergeSubscriptions } from "./services/machines.ts";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
-  options: { name: { type: "string" }, role: { type: "string" }, label: { type: "string" }, user: { type: "string" } },
+  options: { name: { type: "string" }, role: { type: "string" }, label: { type: "string" }, user: { type: "string" },
+    from: { type: "string" }, into: { type: "string" } },
 });
 const sql = connect(process.env.DATABASE_URL ?? "postgres://localhost:5432/opportunity_nav");
 await migrate(sql);
@@ -45,8 +48,15 @@ try {
       console.log(t.token);
       break;
     }
+    case "merge-usage": {
+      if (!values.from || !values.into) throw new Error("Pass --from <subscription id> --into <subscription id>.");
+      const uid = await userId();
+      await sql.begin((tx) => mergeSubscriptions(tx, uid, values.from!, values.into!));
+      console.log("Merged. The old card is hidden; its reports now go to the other card.");
+      break;
+    }
     default:
-      console.log("Usage: opnav-admin setup --name <name> | signin | token --role node|agent --label <label>");
+      console.log("Usage: opnav-admin setup --name <name> | signin | token --role node|agent --label <label> | merge-usage --from <id> --into <id>");
   }
 } finally {
   await sql.end();

@@ -39,7 +39,7 @@ export const grok: Adapter = {
     ]);
     const billing = monthly.status === "fulfilled" ? object(monthly.value.config) : {};
     const credit = credits.status === "fulfilled" ? object(credits.value.config) : {};
-    if (!login.refreshToken) login.id ??= string(billing.userId ?? credit.userId);
+    login.id ??= string(billing.userId ?? credit.userId);
     const cap = amount(billing.monthlyLimit);
     const used = amount(billing.used);
     const period = object(credit.currentPeriod);

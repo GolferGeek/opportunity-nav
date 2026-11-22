@@ -20,15 +20,21 @@ export const agy: Adapter = {
     const refreshToken = string(oauth.refresh_token ?? saved.refresh_token);
     if (!token && !refreshToken) return;
     const claims = jwt(string(oauth.id_token ?? saved.id_token));
-    return { token, refreshToken, refreshExpiresAt: timestamp(oauth.refresh_token_expires_at ?? saved.refresh_token_expires_at), id: string(claims.sub) ?? string(claims.email ?? saved.email)?.toLowerCase(),
+    // Key on the Google account's email: Antigravity saves it beside the token even
+    // when it keeps no id_token, so every machine signed in to the account agrees.
+    const email = string(claims.email ?? saved.id_token_email ?? saved.email)?.toLowerCase();
+    const sub = string(claims.sub);
+    return { token, refreshToken, refreshExpiresAt: timestamp(oauth.refresh_token_expires_at ?? saved.refresh_token_expires_at),
+      id: email ?? sub, formerIds: email && sub ? [sub] : undefined,
       expiresAt: timestamp(oauth.expiry ?? saved.expiry) };
   },
   async read(ctx, login) {
     const base = "https://daily-cloudcode-pa.googleapis.com/v1internal:";
     const headers = { "User-Agent": "antigravity" };
-    if (!login.id && !login.refreshToken) {
+    if (!login.id) {
       const profile = await request(ctx, "https://openidconnect.googleapis.com/v1/userinfo", login);
-      login.id = string(profile.sub) ?? string(profile.email)?.toLowerCase();
+      const email = string(profile.email)?.toLowerCase();
+      login.id = email ?? string(profile.sub);
     }
     const assist = await request(ctx, base + "loadCodeAssist", login, {}, headers);
     const project = string(assist.cloudaicompanionProject) ?? string(object(assist.cloudaicompanionProject).id);
