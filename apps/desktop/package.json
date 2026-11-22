@@ -2,6 +2,7 @@
   "name": "@opnav/desktop",
   "version": "0.1.0",
   "private": true,
+  "productName": "Opportunity Nav",
   "description": "Opportunity Nav desktop app",
   "author": "Opportunity Nav",
   "main": "dist/main.cjs",

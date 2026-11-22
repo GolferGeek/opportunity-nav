@@ -10,6 +10,9 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { startNode } from "@opnav/node";
 
+// Hyprland and other non-GNOME/KDE desktops aren't auto-detected; use the Secret Service (gnome-keyring, KeePassXC…) so tokens are encrypted.
+if (process.platform === "linux" && !app.commandLine.hasSwitch("password-store")) app.commandLine.appendSwitch("password-store", "gnome-libsecret");
+
 interface Config {
   serverUrl: string;
   uiToken: string; // encrypted, base64
