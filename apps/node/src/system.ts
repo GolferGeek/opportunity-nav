@@ -47,6 +47,7 @@ export async function executable(sys: System, names: string[]): Promise<string |
 }
 
 export function localPath(sys: System, value: string): string {
+  if (value === "~") return sys.home;
   return value.startsWith("~/") ? join(sys.home, value.slice(2)) : resolve(value);
 }
 

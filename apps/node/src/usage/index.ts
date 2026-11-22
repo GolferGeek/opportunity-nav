@@ -53,7 +53,7 @@ export function createUsageCollector(ctx: UsageContext) {
   return async (): Promise<{ report: UsageReport; retry: boolean }> => {
     const results = await Promise.all(adapters.map(async adapter => {
       const login = await adapter.detect(ctx.sys);
-      return login ? collect(adapter, login) : { retry: false };
+      return login ? collect(adapter, login) : { account: undefined, retry: false };
     }));
     return {
       report: { observedAt: new Date().toISOString(), accounts: results.flatMap(result => result.account ? [result.account] : []) },

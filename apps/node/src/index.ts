@@ -1,0 +1,120 @@
+import { access } from "node:fs/promises";
+import { arch, hostname } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
+import { ClaimResponse, DEFAULT_HEARTBEAT_INTERVAL_SEC, DEFAULT_USAGE_INTERVAL_SEC, ExternalWorkReport,
+  NODE, NodeHeartbeat, NodeHeartbeatResponse } from "@opnav/shared";
+import type { ProviderCapability } from "@opnav/shared";
+import { nodeApi } from "./api.ts";
+import { capabilities, checkouts } from "./capabilities.ts";
+import { handoffReport } from "./handoff.ts";
+import { runTurn } from "./lease.ts";
+import { localPath, system } from "./system.ts";
+import type { System } from "./system.ts";
+import { createUsageCollector } from "./usage/index.ts";
+
+const version = "0.1.0";
+
+export interface StartNodeOptions {
+  serverUrl: string;
+  token: string;
+  name?: string;
+  checkoutRoots?: string[];
+  checkoutDepth?: number;
+  handoffDir?: string | false;
+  claimIntervalMs?: number;
+  externalIntervalMs?: number;
+  onStatus?: (message: string) => void;
+  fetch?: typeof fetch;
+  system?: Partial<System>;
+}
+
+export function startNode(options: StartNodeOptions): { stop(): Promise<void> } {
+  if (!options.token.trim()) throw new Error("Set a node token.");
+  const sys = system(options.system);
+  const controller = new AbortController();
+  const { signal } = controller;
+  const transport = options.fetch ?? fetch;
+  function report(message: string) {
+    try {
+      options.onStatus?.(message);
+    } catch {
+      // A status listener must not stop the helper.
+    }
+  }
+  const post = nodeApi(options.serverUrl, options.token, transport, signal, () => {
+    if (!signal.aborted) report("The node token was revoked.");
+    controller.abort();
+  });
+  const collect = createUsageCollector({ sys, fetch: transport, signal });
+  let time = { heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC, usageIntervalSec: DEFAULT_USAGE_INTERVAL_SEC };
+  let registered = false;
+  let providers: ProviderCapability[] = [];
+  let activeJobId: string | undefined;
+  let handoff: string | undefined;
+  const configured = options.handoffDir === false ? undefined : localPath(sys, options.handoffDir ?? "~/Work/handoff");
+  const roots = options.checkoutRoots ?? ["~/Projects", "~/projects"];
+  const wait = (ms: number) => sleep(ms, undefined, { signal }).catch(() => {});
+  async function loop(label: string, operation: () => Promise<number>, fallback: number) {
+    let failed = false;
+    while (!signal.aborted) {
+      let interval = fallback;
+      try {
+        interval = await operation();
+        failed = false;
+      } catch {
+        if (!signal.aborted && !failed) report(`Could not ${label}. Retrying.`);
+        failed = true;
+      }
+      await wait(interval);
+    }
+  }
+
+  const tasks = [
+    loop("send a heartbeat", async () => {
+      handoff = configured && await access(configured).then(() => configured, () => undefined);
+      const [detected, discovered] = await Promise.all([capabilities(sys), checkouts(sys, roots, options.checkoutDepth ?? 4)]);
+      const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
+        arch: arch(), helperVersion: version, providers: detected, checkouts: discovered,
+        handoff: handoff ? { dir: handoff } : undefined, activeJobIds: activeJobId ? [activeJobId] : [] });
+      time = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
+      providers = detected;
+      registered = true;
+      return time.heartbeatIntervalSec * 1000;
+    }, 5000),
+    loop("upload subscription usage", async () => {
+      if (!registered) return 250;
+      const { report: usage, retry } = await collect();
+      if (usage.accounts.length) await post(NODE.usage, usage);
+      return retry ? Math.min(time.usageIntervalSec * 1000, 60_000) : time.usageIntervalSec * 1000;
+    }, 10_000),
+    loop("upload handoff work", async () => {
+      if (!registered) return 250;
+      if (handoff) await post(NODE.external, ExternalWorkReport.parse(await handoffReport(sys, handoff)));
+      return options.externalIntervalMs ?? 15_000;
+    }, 5000),
+    loop("claim work", async () => {
+      const interval = options.claimIntervalMs ?? 3000;
+      if (!registered) return 250;
+      const available = new Map(providers.filter(p => p.canRunJobs && p.signedIn && p.cliPath).map(p => [p.provider, p.cliPath!]));
+      if (!available.size) return interval;
+      const { turns } = ClaimResponse.parse(await post(NODE.claim, { providers: [...available.keys()], max: 1 }));
+      const turn = turns[0];
+      const binary = turn && available.get(turn.job.provider);
+      if (turn && binary) {
+        activeJobId = turn.job.id;
+        try {
+          await runTurn(post, sys, binary, turn, signal, report);
+        } finally {
+          activeJobId = undefined;
+        }
+      }
+      return interval;
+    }, 5000),
+  ];
+  return { async stop() { controller.abort(); await Promise.all(tasks); } };
+}
+
+export async function readUsage(options: Pick<StartNodeOptions, "system" | "fetch"> = {}) {
+  const collect = createUsageCollector({ sys: system(options.system), fetch: options.fetch ?? fetch });
+  return (await collect()).report;
+}
