@@ -148,7 +148,9 @@ export async function handoffReport(sys: System, dir: string, briefs = new Map<s
           questions: folder === "done" ? questionsFrom(redact(body)) : [],
           detail: detailed ? {
             brief: briefs.get(name),
-            activity: await logActivity(join(dir, "logs", id + ".log")),
+            // The watcher's event stream (Claude stream-json) when it writes one; else its plain log.
+            activity: await logActivity(join(dir, "logs", id + ".events.jsonl")).then(a => a?.length ? a
+              : logActivity(join(dir, "logs", id + ".log"))),
             report: folder === "done" ? redact(body).slice(0, 50_000) : undefined,
           } : undefined,
         });

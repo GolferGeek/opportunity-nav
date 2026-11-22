@@ -119,8 +119,11 @@ async function run(sql: Sql, cfg: ChatConfig, userId: string, threadId: string, 
     const timer = setTimeout(() => p.kill("SIGTERM"), cfg.timeoutMs);
     let said = false;
     let failed: string | null = null;
-    const writes: Promise<unknown>[] = [];
-    const add = (role: string, body: string) => writes.push(sql`insert into chat_messages (thread_id, role, text) values (${threadId}, ${role}, ${body})`);
+    // Writes go one at a time so messages keep the order Claude produced them in.
+    let chain: Promise<unknown> = Promise.resolve();
+    const queue = (f: () => Promise<unknown>) => (chain = chain.then(f));
+    const writes = { push: (f: () => Promise<unknown>) => queue(f) };
+    const add = (role: string, body: string) => queue(() => sql`insert into chat_messages (thread_id, role, text) values (${threadId}, ${role}, ${body})`);
 
     for await (const line of createInterface({ input: p.stdout })) {
       let ev: any;
@@ -130,7 +133,7 @@ async function run(sql: Sql, cfg: ChatConfig, userId: string, threadId: string, 
         continue;
       }
       if (ev.session_id && ev.type === "system")
-        writes.push(sql`update chat_threads set claude_session_id = ${ev.session_id} where id = ${threadId}`);
+        writes.push(() => sql`update chat_threads set claude_session_id = ${ev.session_id} where id = ${threadId}`);
       if (ev.type === "assistant") {
         for (const c of ev.message?.content ?? []) {
           if (c.type === "text" && c.text?.trim()) {
@@ -148,12 +151,12 @@ async function run(sql: Sql, cfg: ChatConfig, userId: string, threadId: string, 
     }
     const code: number | null = await new Promise((r) => (p.exitCode !== null ? r(p.exitCode) : p.once("close", r)));
     clearTimeout(timer);
-    await Promise.all(writes);
+    await chain;
     if (spawnError) throw spawnError;
     if (p.signalCode === "SIGTERM" && code !== 0) add("error", "Stopped.");
     else if (failed) add("error", `Claude couldn't finish: ${failed}`);
     else if (code !== 0 && !said) add("error", `Claude stopped (${code}). ${stderr.split("\n").find((l) => l.trim()) ?? ""}`.trim());
-    await Promise.all(writes);
+    await chain;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT")
       throw new Error(`Couldn't start Claude (${cfg.command}). Install Claude Code on the server or set OPNAV_ASSISTANT_CMD.`);
