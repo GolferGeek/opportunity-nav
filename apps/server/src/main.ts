@@ -14,7 +14,16 @@ if (applied.length) console.log(`Applied migrations: ${applied.join(", ")}`);
 
 const port = Number(env("PORT", "4317"));
 const host = env("HOST", "127.0.0.1");
-const app = await buildApp({ sql, publicUrl: env("PUBLIC_URL", `http://${host}:${port}`), logger: true });
+const app = await buildApp({
+  sql,
+  publicUrl: env("PUBLIC_URL", `http://${host}:${port}`),
+  logger: true,
+  assistant: {
+    command: env("OPNAV_ASSISTANT_CMD", "claude"),
+    selfUrl: `http://127.0.0.1:${port}`,
+    timeoutMs: Number(env("OPNAV_ASSISTANT_TIMEOUT_MS", "180000")),
+  },
+});
 await app.listen({ port, host });
 
 const sweep = setInterval(() => {

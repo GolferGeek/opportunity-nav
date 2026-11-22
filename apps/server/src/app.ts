@@ -18,12 +18,13 @@ import type { Sql } from "./db.ts";
 import { authenticate, createToken, type Principal, type Role } from "./auth.ts";
 import { HttpError } from "./errors.ts";
 import { heartbeat, ingestExternal, ingestUsage, listMachines, machineForToken } from "./services/machines.ts";
-import { answerQuestion, cancelJob, claim, createJob, getJob, NewJob, recordEvents, renewLease } from "./services/jobs.ts";
+import { answerQuestion, cancelJob, claim, createJob, getJob, jobRow, NewJob, recordEvents, renewLease } from "./services/jobs.ts";
 import { createNode, listTree, NewTreeNode, TreeNodePatch, updateNode } from "./services/tree.ts";
 import { dashboard, happening } from "./services/views.ts";
 import { runAction } from "./services/actions.ts";
 import { agentCard, handleA2A } from "./a2a.ts";
 import { handleMcp } from "./mcp.ts";
+import { ask, type AssistantConfig } from "./assistant.ts";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -36,6 +37,7 @@ export interface AppOptions {
   publicUrl: string;
   webDist?: string;
   logger?: boolean;
+  assistant?: AssistantConfig;
 }
 
 const uuid = z.string().uuid();
@@ -113,6 +115,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     });
     r.get("/api/dashboard", async (req) => dashboard(sql, req.principal.userId));
     r.post("/api/jobs", async (req) => createJob(sql, req.principal.userId, NewJob.parse(req.body), by(req)));
+    r.get("/api/jobs", async (req) => {
+      const { scope } = z.object({ scope: uuid.optional() }).parse(req.query);
+      const rows = scope
+        ? await sql`with recursive sub as (select id from tree_nodes where id = ${scope} and user_id = ${req.principal.userId}
+              union all select t.id from tree_nodes t join sub on t.parent_id = sub.id)
+            select * from jobs where project_id in (select id from sub) order by updated_at desc limit 50`
+        : await sql`select * from jobs where user_id = ${req.principal.userId} order by updated_at desc limit 50`;
+      return rows.map(jobRow);
+    });
     r.get("/api/jobs/:id", async (req) => getJob(sql, req.principal.userId, id(req)));
     r.post("/api/jobs/:id/cancel", async (req) => cancelJob(sql, req.principal.userId, id(req)));
     r.post("/api/questions/:id/answer", async (req) => {
@@ -145,6 +156,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       if (!Object.keys(set).length) return { updated: false };
       await sql`update subscriptions set ${sql(set)} where id = ${id(req)} and user_id = ${req.principal.userId}`;
       return { updated: true };
+    });
+    r.post("/api/ask", async (req) => {
+      const b = z.object({ text: z.string().trim().min(1).max(4000), scope: z.object({ id: uuid, path: z.array(z.string()) }).nullable().default(null) }).parse(req.body);
+      if (!opts.assistant) throw new HttpError(503, "The assistant isn't set up on this server.");
+      return ask(sql, opts.assistant, req.principal.userId, b.text, b.scope);
     });
     /** Same actions agents get; the UI's command bar uses this. */
     r.post("/api/act", async (req) => {

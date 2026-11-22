@@ -151,7 +151,7 @@ function autoLine(active: number, questions: number, roadblocks: number, lastDon
   const parts: string[] = [];
   if (questions) parts.push(`${questions} question${questions > 1 ? "s" : ""} for you`);
   if (roadblocks) parts.push(`${roadblocks} roadblock${roadblocks > 1 ? "s" : ""}`);
-  if (active) parts.push(`${active} job${active > 1 ? "s" : ""} running`);
+  if (active) parts.push(`${active} job${active > 1 ? "s" : ""} in flight`);
   if (parts.length) return parts.join(" · ");
   return lastDone ? `Last done: ${lastDone.split("\n")[0]!.slice(0, 120)}` : "Quiet";
 }

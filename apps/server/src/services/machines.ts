@@ -6,12 +6,12 @@ import { listTree, normaliseRemote } from "./tree.ts";
 export async function heartbeat(db: Db, userId: string, tokenId: string, hb: NodeHeartbeat): Promise<string> {
   const checkouts = hb.checkouts.map((c) => ({ ...c, remote: c.remote ? normaliseRemote(c.remote) : undefined }));
   const [r] = await db<{ id: string }[]>`
-    insert into nodes (user_id, token_id, hostname, name, platform, arch, helper_version, providers, checkouts, handoff, last_seen_at)
+    insert into nodes (user_id, token_id, hostname, name, platform, arch, helper_version, providers, checkouts, handoff, autonomy, last_seen_at)
     values (${userId}, ${tokenId}, ${hb.hostname}, ${hb.name ?? hb.hostname}, ${hb.platform}, ${hb.arch}, ${hb.helperVersion},
-            ${db.json(hb.providers as any)}, ${db.json(checkouts as any)}, ${hb.handoff ? db.json(hb.handoff as any) : null}, now())
+            ${db.json(hb.providers as any)}, ${db.json(checkouts as any)}, ${hb.handoff ? db.json(hb.handoff as any) : null}, ${hb.autonomy}, now())
     on conflict (token_id) do update set hostname = excluded.hostname, name = coalesce(nullif(${hb.name ?? ""}, ''), nodes.name),
       platform = excluded.platform, arch = excluded.arch, helper_version = excluded.helper_version,
-      providers = excluded.providers, checkouts = excluded.checkouts, handoff = excluded.handoff, last_seen_at = now()
+      providers = excluded.providers, checkouts = excluded.checkouts, handoff = excluded.handoff, autonomy = excluded.autonomy, last_seen_at = now()
     returning id`;
   return r!.id;
 }
@@ -32,6 +32,7 @@ export async function listMachines(db: Db, userId: string) {
     providers: r.providers,
     checkouts: r.checkouts,
     handoff: r.handoff,
+    autonomy: r.autonomy,
     lastSeenAt: r.last_seen_at,
     online: !r.revoked_at && Date.now() - new Date(r.last_seen_at).getTime() < 120_000,
     revoked: !!r.revoked_at,
