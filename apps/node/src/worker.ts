@@ -2,12 +2,12 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { JobEvent, NeedsInput } from "@opnav/shared";
 import type { Turn } from "@opnav/shared";
-import { childEnv, object, parse, string } from "./system.ts";
+import { childEnv, executable, object, parse, string } from "./system.ts";
 import type { System } from "./system.ts";
 
 type WithoutEnvelope<T> = T extends unknown ? Omit<T, "seq" | "at"> : never;
 export type EventContent = WithoutEnvelope<JobEvent>;
-type Terminal = Extract<EventContent, { type: "error" | "result" | "needs_input" }>;
+export type Terminal = Extract<EventContent, { type: "error" | "result" | "needs_input" }>;
 
 const instruction = [
   "If you need the user to answer before you can continue, end your final reply with an opnav-needs-input fenced block.",
@@ -18,7 +18,9 @@ const instruction = [
   "```",
 ].join("\n");
 
-export function workerArgs(turn: Turn): string[] {
+export type Autonomy = "edit" | "full";
+
+export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbox = false): string[] {
   const { job, providerSessionId } = turn;
   if (turn.kind === "continue" && (!providerSessionId || providerSessionId.startsWith("-") || !turn.answer)) {
     throw new Error("Continue turn needs a session and an answer");
@@ -26,11 +28,19 @@ export function workerArgs(turn: Turn): string[] {
   const resume = turn.kind === "continue" ? providerSessionId : undefined;
   const model = job.model ? [`--model=${job.model}`] : [];
   if (job.provider === "claude") {
-    return ["-p", "--output-format", "stream-json", "--verbose", ...model,
+    const permissions = autonomy === "full" ? ["--dangerously-skip-permissions"] : [
+      "--permission-mode", "acceptEdits",
+      ...(claudeSandbox ? ["--settings", JSON.stringify({ sandbox: {
+        enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
+      } })] : []),
+    ];
+    return ["-p", "--output-format", "stream-json", "--verbose", ...permissions, ...model,
       ...(job.effort ? ["--effort", job.effort] : []), ...(resume ? ["--resume", resume] : [])];
   }
   if (job.provider === "codex") {
-    return ["exec", ...(resume ? ["resume"] : []), "--json", ...model,
+    const permissions = autonomy === "full" ? ["--dangerously-bypass-approvals-and-sandbox"]
+      : resume ? ["-c", 'sandbox_mode="workspace-write"'] : ["--sandbox", "workspace-write"];
+    return ["exec", ...(resume ? ["resume"] : []), ...permissions, "--json", ...model,
       ...(job.effort ? ["-c", `model_reasoning_effort=${JSON.stringify(job.effort)}`] : []),
       ...(resume ? [resume] : []), "-"];
   }
@@ -60,12 +70,15 @@ function errorEvent(details: string, crashed = false): Terminal {
 }
 
 export async function runWorker(sys: System, binary: string, turn: Turn, signal: AbortSignal,
-  emit: (event: EventContent) => void): Promise<Terminal> {
+  emit: (event: EventContent) => void, autonomy: Autonomy = "edit"): Promise<Terminal> {
   if (turn.job.location !== "cloud") {
     return { type: "error", code: "provider_error", message: "This worker only runs cloud models.", retryable: false };
   }
-  const args = workerArgs(turn);
-  const prompt = `${turn.kind === "continue" ? turn.answer!.text : turn.job.prompt}\n\n${instruction}\n`;
+  const claudeSandbox = turn.job.provider === "claude" && autonomy === "edit" &&
+    (sys.platform === "darwin" || sys.platform === "linux" &&
+      (await Promise.all([executable(sys, ["bwrap"]), executable(sys, ["socat"])])).every(Boolean));
+  const args = workerArgs(turn, autonomy, claudeSandbox);
+  const prompt = `${turn.kind === "continue" ? turn.answer!.text : turn.job.prompt}\n\n${instruction}\nCommit your work on a new branch opnav/${turn.job.id.slice(0, 8)} and do not push.\n`;
   const group = sys.platform !== "win32";
   const proc = spawn(binary, args, { cwd: turn.job.checkoutPath, env: childEnv(sys.env), detached: group,
     stdio: ["pipe", "pipe", "pipe"] });

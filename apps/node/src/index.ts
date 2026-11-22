@@ -10,6 +10,7 @@ import { handoffReport } from "./handoff.ts";
 import { runTurn } from "./lease.ts";
 import { localPath, system } from "./system.ts";
 import type { System } from "./system.ts";
+import type { Autonomy } from "./worker.ts";
 import { createUsageCollector } from "./usage/index.ts";
 
 const version = "0.1.0";
@@ -18,6 +19,7 @@ export interface StartNodeOptions {
   serverUrl: string;
   token: string;
   name?: string;
+  autonomy?: Autonomy;
   checkoutRoots?: string[];
   checkoutDepth?: number;
   handoffDir?: string | false;
@@ -31,6 +33,7 @@ export interface StartNodeOptions {
 export function startNode(options: StartNodeOptions): { stop(): Promise<void> } {
   if (!options.token.trim()) throw new Error("Set a node token.");
   const sys = system(options.system);
+  const autonomy = (options.autonomy ?? sys.env.OPNAV_WORKER_AUTONOMY) === "full" ? "full" : "edit";
   const controller = new AbortController();
   const { signal } = controller;
   const transport = options.fetch ?? fetch;
@@ -74,7 +77,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       handoff = configured && await access(configured).then(() => configured, () => undefined);
       const [detected, discovered] = await Promise.all([capabilities(sys), checkouts(sys, roots, options.checkoutDepth ?? 4)]);
       const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
-        arch: arch(), helperVersion: version, providers: detected, checkouts: discovered,
+        arch: arch(), autonomy, helperVersion: version, providers: detected, checkouts: discovered,
         handoff: handoff ? { dir: handoff } : undefined, activeJobIds: activeJobId ? [activeJobId] : [] });
       time = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
       providers = detected;
@@ -103,7 +106,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       if (turn && binary) {
         activeJobId = turn.job.id;
         try {
-          await runTurn(post, sys, binary, turn, signal, report);
+          await runTurn(post, sys, binary, turn, signal, report, autonomy);
         } finally {
           activeJobId = undefined;
         }

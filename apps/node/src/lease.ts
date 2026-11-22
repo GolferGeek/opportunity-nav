@@ -6,12 +6,12 @@ import type { Post } from "./api.ts";
 import { object } from "./system.ts";
 import type { System } from "./system.ts";
 import { runWorker } from "./worker.ts";
-import type { EventContent } from "./worker.ts";
+import type { Autonomy, EventContent } from "./worker.ts";
 
 const terminalTypes = new Set<string>(TerminalEventTypes);
 
 export async function runTurn(post: Post, sys: System, binary: string, turn: Turn, signal: AbortSignal,
-  report: (message: string) => void) {
+  report: (message: string) => void, autonomy: Autonomy) {
   const lease = new AbortController();
   const worker = new AbortController();
   const lifetime = AbortSignal.any([signal, lease.signal]);
@@ -63,7 +63,7 @@ export async function runTurn(post: Post, sys: System, binary: string, turn: Tur
       }
     }
   })();
-  const work = runWorker(sys, binary, turn, workerLifetime, emit).catch((): EventContent => ({
+  const work = runWorker(sys, binary, turn, workerLifetime, emit, autonomy).catch((): EventContent => ({
     type: "error", code: "worker_crashed", message: "The worker could not start.", retryable: false,
   })).then(emit);
   let retry = 250;
