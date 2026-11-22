@@ -232,7 +232,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
   const statuses: string[] = [];
   const service = startNode({
     serverUrl: `http://127.0.0.1:${address.port}`, token: "node-fixture", claimIntervalMs: 25,
-    externalIntervalMs: 25, system: { home, env: { PATH: [bin, process.env.PATH].join(delimiter), OPNAV_NODE_TOKEN: "node-fixture", ROOM_FIXTURE: roomState } },
+    externalIntervalMs: 25, system: { home, platform: "linux", env: { PATH: [bin, "/usr/bin", "/bin"].join(delimiter), OPNAV_NODE_TOKEN: "node-fixture", ROOM_FIXTURE: roomState } },
     onStatus: message => statuses.push(message),
     fetch: async (url, init) => {
       if (String(url).startsWith("https://api.anthropic.com")) return new Response(await usageFixture());

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
+import { createCipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { readUsage } from "../src/index.ts";
 
 function fixtureJwt(fields: object) {
@@ -23,14 +24,13 @@ async function workspace(t: TestContext) {
   };
 }
 
-test("Cursor, Grok Bot, Antigravity, Grok and Gemini report fixture accounts", async t => {
+test("Cursor, Grok Bot, Antigravity and Grok report fixture accounts", async t => {
   const { home, save } = await workspace(t);
   await save(".config/cursor/auth.json", { accessToken: fixtureJwt({ sub: "auth0|cursor-test" }) });
   await save(".gemini/antigravity-cli/antigravity-oauth-token",
     { token: { access_token: "test-agy" }, id_token: fixtureJwt({ sub: "google-agy" }) });
   await save(".grok/auth.json", { fixture: { key: fixtureJwt({ sub: "grok-test" }) } });
   await save(".gemini/oauth_creds.json", { access_token: "test-gemini" });
-  await save(".gemini/google_accounts.json", { active: "test@example.invalid" });
   const data = JSON.parse(await readFile(new URL("./fixtures/usage-responses.json", import.meta.url), "utf8"));
   const calls: string[] = [];
   const report = await readUsage({
@@ -44,8 +44,9 @@ test("Cursor, Grok Bot, Antigravity, Grok and Gemini report fixture accounts", a
       return Response.json(data[method]);
     },
   });
-  const [cursor, grokbot, agy, grok, gemini] = report.accounts;
-  assert.deepEqual(report.accounts.map(account => account.provider), ["cursor", "grokbot", "agy", "grok", "gemini"]);
+  const [cursor, grokbot, agy, grok] = report.accounts;
+  // Gemini CLI is no longer reported, even when its sign-in is on the machine.
+  assert.deepEqual(report.accounts.map(account => account.provider), ["cursor", "grokbot", "agy", "grok"]);
   assert.equal(cursor?.plan, "Fixture plan");
   assert.deepEqual(cursor?.windows.slice(0, 4).map(window => [window.kind, window.used]), [
     ["weekly", 25], ["weekly", 5], ["weekly", 40], ["spend", 1],
@@ -54,7 +55,6 @@ test("Cursor, Grok Bot, Antigravity, Grok and Gemini report fixture accounts", a
   assert.equal(grokbot?.windows[0]?.used, 0);
   assert.deepEqual(agy?.windows.map(window => window.used), [50, 100]);
   assert.deepEqual(grok?.windows.map(window => window.used), [20, 30]);
-  assert.equal(gemini?.status, "unavailable");
   assert.equal(calls.length, 14);
 });
 
@@ -69,7 +69,7 @@ test("Codex uses the app-server with isolated external auth and falls back to ac
     id_token: fixtureJwt({ "https://api.openai.com/auth": { chatgpt_user_id: "fixture-user" } }) } };
   await save(".codex/auth.json", auth);
   const { accounts } = await readUsage({
-    system: { home, env: { PATH: bin, OPNAV_NODE_TOKEN: "fixture-service" } },
+    system: { home, env: { PATH: bin, OPNAV_NODE_TOKEN: "fixture-service" }, platform: "linux" },
     fetch: async () => { throw new Error("No provider HTTP expected"); },
   });
   const account = accounts[0];
@@ -84,7 +84,7 @@ test("Codex reads file-store usage without the CLI and keeps it when the sign-in
   const auth = { tokens: { access_token: fixtureJwt({}), account_id: "fixture-workspace",
     id_token: fixtureJwt({ "https://api.openai.com/auth": { chatgpt_user_id: "fixture-user" } }) } };
   await save(path, auth);
-  const system = { home, env: {} };
+  const system = { home, env: {}, platform: "linux" as const };
   const fixture = JSON.parse(await readFile(new URL("./fixtures/codex-usage.json", import.meta.url), "utf8"));
   const { accounts: [account] } = await readUsage({
     system,
@@ -129,7 +129,7 @@ test("Codex suggests installing the CLI when the file fallback lacks an account 
     "https://api.openai.com/auth": { chatgpt_account_id: "fixture-claim-only" },
   }) } });
   const fetch = t.mock.fn(async () => new Response());
-  const { accounts: [account] } = await readUsage({ system: { home, env: {} }, fetch });
+  const { accounts: [account] } = await readUsage({ system: { home, env: {}, platform: "linux" }, fetch });
   assert.equal(fetch.mock.callCount(), 0);
   assert.equal(account?.status, "unavailable");
   assert.equal(account?.message, "Install the Codex CLI to read usage on this machine.");
@@ -165,4 +165,66 @@ test("scoped Claude windows win over legacy windows and lapsed accounts stay vis
   const cursor = accounts.find(a => a.provider === "cursor");
   assert.equal(cursor?.status, "auth_required");
   assert.equal(cursor?.message, "Cursor refused the saved sign-in. Sign in to the Cursor editor, or run `cursor-agent login`.");
+});
+
+async function fakeCommand(bin: string, name: string, script: string) {
+  await mkdir(bin, { recursive: true });
+  await writeFile(join(bin, name), "#!/bin/sh\n" + script);
+  await chmod(join(bin, name), 0o700);
+}
+
+test("Cursor reads cursor-agent's sign-in from the Secret Service when auth.json points there", async t => {
+  const { home, save } = await workspace(t);
+  const bin = join(home, "bin");
+  const token = fixtureJwt({ sub: "auth0|user_secret", exp: Date.now() / 1000 + 3600 });
+  await save(".config/cursor/auth.json", { storedIn: "os-secret-store" });
+  await fakeCommand(bin, "secret-tool", `[ "$*" = "lookup service cursor-credentials account cursor-user" ] && printf '%s' '${JSON.stringify({ accessToken: token, refreshToken: "fixture-refresh" })}'\n`);
+  const seen: string[] = [];
+  const { accounts } = await readUsage({
+    system: { home, env: { PATH: bin }, platform: "linux" },
+    fetch: async (url, init) => {
+      seen.push(new Headers(init?.headers).get("Authorization") ?? "");
+      const method = String(url).split("/").at(-1);
+      if (method === "GetCurrentPeriodUsage") return Response.json({ planUsage: { totalPercentUsed: 7 } });
+      if (method === "GetSandUsageStatus") return Response.json({ hasNonZeroIncludedLimit: true, usagePercent: 3 });
+      return Response.json({});
+    },
+  });
+  assert.ok(seen.length && seen.every(value => value === `Bearer ${token}`));
+  assert.equal(accounts.find(a => a.provider === "cursor")?.windows[0]?.used, 7);
+  assert.equal(accounts.find(a => a.provider === "grokbot")?.windows[0]?.used, 3);
+});
+
+test("Grok Bot reads the Grok Bot app's own sign-in on macOS, or says how to allow it", async t => {
+  const { home, save } = await workspace(t);
+  const bin = join(home, "bin");
+  const subject = "google-oauth2|user_grokbot";
+  const token = fixtureJwt({ sub: subject, exp: Date.now() / 1000 + 3600 });
+  const key = pbkdf2Sync("fixture-password", "saltysalt", 1003, 16, "sha1");
+  const encrypt = (text: string) => {
+    const cipher = createCipheriv("aes-128-cbc", key, Buffer.alloc(16, " "));
+    return Buffer.concat([Buffer.from("v10"), cipher.update(text), cipher.final()]).toString("base64");
+  };
+  const active = createHash("sha256").update(subject).digest("hex");
+  await save("Library/Application Support/Grok Bot/sand-secrets.json", { version: 1, "cursor-accounts": JSON.stringify({
+    active, accounts: { [active]: { "cursor-access-token": encrypt(token), "cursor-refresh-token": encrypt("fixture-refresh") } },
+  }) });
+  const fetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(new Headers(init?.headers).get("Authorization"), `Bearer ${token}`);
+    assert.match(String(url), /GetSandUsageStatus$/);
+    return Response.json({ hasNonZeroIncludedLimit: true, usagePercent: 42 });
+  };
+
+  await fakeCommand(bin, "security", "exit 1\n");
+  // A refused keychain read is remembered per home for hours, so this run uses its own spelling of the home.
+  const denied = await readUsage({ system: { home: home + "/", env: { PATH: bin }, platform: "darwin" }, fetch });
+  const waiting = denied.accounts.find(a => a.provider === "grokbot");
+  assert.equal(waiting?.status, "auth_required");
+  assert.match(waiting?.message ?? "", /Always Allow/);
+
+  await fakeCommand(bin, "security", `[ "$*" = "find-generic-password -s Grok Bot Safe Storage -a Grok Bot Key -w" ] && echo fixture-password\n`);
+  const { accounts } = await readUsage({ system: { home, env: { PATH: bin }, platform: "darwin" }, fetch });
+  const account = accounts.find(a => a.provider === "grokbot");
+  assert.equal(account?.status, "ok");
+  assert.equal(account?.windows[0]?.used, 42);
 });

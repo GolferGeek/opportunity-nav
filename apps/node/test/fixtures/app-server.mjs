@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { createInterface } from "node:readline";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
 assert.equal(process.argv[2], "app-server");
-assert.equal(process.env.CODEX_HOME, process.cwd());
+assert.equal(realpathSync(process.env.CODEX_HOME), realpathSync(process.cwd()));
 assert.equal(existsSync(join(process.cwd(), "auth.json")), false);
 assert.equal(process.env.OPNAV_NODE_TOKEN, undefined);
 const methods = ["initialize", "initialized", "account/login/start", "account/rateLimits/read", "account/read"];

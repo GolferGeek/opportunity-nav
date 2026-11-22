@@ -22,9 +22,9 @@ export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return rest;
 }
 
-export async function command(sys: System, file: string, args: string[], cwd?: string): Promise<string> {
+export async function command(sys: System, file: string, args: string[], cwd?: string, timeout = 4000): Promise<string> {
   try {
-    const run = exec(file, args, { cwd, env: childEnv(sys.env), timeout: 4000, maxBuffer: 256 * 1024 });
+    const run = exec(file, args, { cwd, env: childEnv(sys.env), timeout, maxBuffer: 256 * 1024 });
     run.child.stdin?.end();
     const { stdout } = await run;
     return stdout.trim();

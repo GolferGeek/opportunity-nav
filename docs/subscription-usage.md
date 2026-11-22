@@ -30,12 +30,13 @@ So Opportunity Nav needs a **small usage reporter on each machine** where the ag
 |---|---|---|---|
 | **Claude Code** | `~/.claude/.credentials.json` → `claudeAiOauth.accessToken` (on macOS, the Keychain item `Claude Code-credentials`) | `GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer <token>` and `anthropic-beta: oauth-2025-04-20` | 5-hour and 7-day windows plus any model-specific window, each with `utilization` and `resets_at`. The plan tier is in the CLI profile (`oauthAccount`) or the credentials. |
 | **Codex** | `~/.codex/auth.json` (`CODEX_HOME`) | Starts `codex app-server` and sends JSON-RPC: `initialize`, then `account/rateLimits/read` (`account/read` as a fallback for the plan). This is Codex's own interface, which makes it the most stable option. | `rateLimitsByLimitId` (or the older `rateLimits`): primary and secondary windows with used % and reset time, a spend cap if there is one, and the plan. An API-key login has no plan limits. |
-| **Cursor** | Cursor CLI's `auth.json`, or the editor's `state.vscdb` | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/<Method>` with a Bearer token: `GetCurrentPeriodUsage`, `GetPlanInfo`, `GetAggregatedUsageEvents` | Included total for the period, auto and named-model meters, on-demand spend, and tokens by model per day |
-| **Grok Bot** | The Cursor sign-in | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` | Weekly included usage |
+| **Cursor** | cursor-agent's sign-in: the OS secret store (Linux Secret Service `cursor-credentials`/`cursor-user` when `auth.json` says `storedIn: os-secret-store`; macOS Keychain `cursor-access-token`/`cursor-user`), else the editor's `state.vscdb` | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/<Method>` with a Bearer token: `GetCurrentPeriodUsage`, `GetPlanInfo`, `GetAggregatedUsageEvents` | Included total for the period, auto and named-model meters, on-demand spend, and tokens by model per day |
+| **Grok Bot** | On macOS, the Grok Bot app's own sign-in (`sand-secrets.json`, decrypted with the Keychain item `Grok Bot Safe Storage`, which needs one Always Allow); otherwise the Cursor sign-in | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` | Weekly included usage |
 | **Grok (CLI)** | Grok's `auth.json` | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`, and `/v1/billing` for the monthly quota | Billing-period credits and monthly quota |
 | **Antigravity (`agy`)** | The keyring, or `~/.gemini/antigravity-cli/antigravity-oauth-token` | `https://daily-cloudcode-pa.googleapis.com` `v1internal:loadCodeAssist` (plan), then `v1internal:retrieveUserQuotaSummary` | 5-hour and weekly windows, plus any Claude or GPT allowance |
-| **Gemini CLI** | `~/.gemini/oauth_creds.json` (to check) | Probably the same Cloud Code API as agy. Omarchy has no Gemini CLI collector, so this needs testing. | To check |
 | **Local models** (Studio MLX/Ollama, Spark) | none | Nothing to meter. Count tokens from logs if wanted. | n/a |
+
+Gemini CLI isn't read any more: personal Google accounts moved to Antigravity (`agy`).
 
 ## Risks
 

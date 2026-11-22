@@ -1,14 +1,42 @@
 /* Usage collection adapted from omarchy-agent-usage-cursor and collectors.py (MIT). */
 import { join } from "node:path";
-import { command, json, localPath, number, object, string, timestamp } from "../system.ts";
+import { pathToFileURL } from "node:url";
+import { command, json, localPath, number, object, parse, string, timestamp } from "../system.ts";
 import type { System } from "../system.ts";
 import { AuthRequired, jwt, percent, request } from "./common.ts";
 import type { Adapter, Login, UsageContext } from "./common.ts";
 import type { UsageWindow } from "@opnav/shared";
 
+/**
+ * cursor-agent keeps its sign-in in the OS secret store and leaves only
+ * `{ "storedIn": "os-secret-store" }` in auth.json (Linux), or nothing at all (macOS).
+ * Read it there, read-only, the same way cursor-agent does.
+ */
+async function secretStore(sys: System, file: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (sys.platform === "darwin") {
+    const [accessToken, refreshToken] = await Promise.all(["cursor-access-token", "cursor-refresh-token"]
+      .map(service => command(sys, "security", ["find-generic-password", "-s", service, "-a", "cursor-user", "-w"])));
+    return { accessToken, refreshToken };
+  }
+  if (sys.platform === "linux" && file.storedIn === "os-secret-store") {
+    return parse(await command(sys, "secret-tool", ["lookup", "service", "cursor-credentials", "account", "cursor-user"]));
+  }
+  return {};
+}
+
+/** The editor's database is in WAL mode; when Cursor is closed a read-only open can fail, so fall back to reading the file as it is. */
+async function editorToken(sys: System, config: string): Promise<string | undefined> {
+  const root = sys.platform === "darwin" ? join(sys.home, "Library/Application Support") : config;
+  const path = join(root, "Cursor/User/globalStorage/state.vscdb");
+  const query = "SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken' LIMIT 1";
+  return string(await command(sys, "sqlite3", ["-readonly", path, query]))
+    ?? string(await command(sys, "sqlite3", [`${pathToFileURL(path).href}?mode=ro&immutable=1`, query]));
+}
+
 export async function cursorLogin(sys: System): Promise<Login | undefined> {
   const config = sys.env.XDG_CONFIG_HOME ?? join(sys.home, ".config");
-  const cli = await json(localPath(sys, sys.env.CURSOR_AUTH_PATH ?? join(config, "cursor/auth.json")));
+  const file = await json(localPath(sys, sys.env.CURSOR_AUTH_PATH ?? join(config, "cursor/auth.json")));
+  const cli = string(file.accessToken) || string(file.refreshToken) ? file : { ...file, ...await secretStore(sys, file) };
   const envToken = string(sys.env.CURSOR_AUTH_TOKEN);
   const cliToken = string(cli.accessToken);
   const cliExpiry = timestamp(jwt(cliToken).exp);
@@ -18,10 +46,7 @@ export async function cursorLogin(sys: System): Promise<Login | undefined> {
     return { credential: apiKey };
   }
   if (!envToken && !sys.env.CURSOR_API_KEY && (!token || (cliExpiry && Date.parse(cliExpiry) <= Date.now()))) {
-    const root = sys.platform === "darwin" ? join(sys.home, "Library/Application Support") : config;
-    const editor = await command(sys, "sqlite3", ["-readonly", join(root, "Cursor/User/globalStorage/state.vscdb"),
-      "SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken' LIMIT 1"]);
-    token = string(editor) ?? token;
+    token = await editorToken(sys, config) ?? token;
   }
   const saved = !envToken && token === cliToken;
   const refreshToken = saved ? string(cli.refreshToken ?? cli.refresh_token) : undefined;

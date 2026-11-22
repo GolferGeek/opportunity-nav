@@ -5,14 +5,13 @@ import { agy } from "./agy.ts";
 import { claude } from "./claude.ts";
 import { codex } from "./codex.ts";
 import { cursor } from "./cursor.ts";
-import { gemini } from "./gemini.ts";
 import { grok } from "./grok.ts";
 import { grokbot } from "./grokbot.ts";
 import { usageCache } from "./cache.ts";
 import { AuthRequired, LoginStale } from "./common.ts";
 import type { Adapter, Login, UsageContext } from "./common.ts";
 
-export const adapters = [claude, codex, cursor, grokbot, agy, grok, gemini];
+export const adapters = [claude, codex, cursor, grokbot, agy, grok];
 
 const displayNames = {
   claude: "Claude Code", codex: "Codex", cursor: "Cursor", grokbot: "Grok Bot",
