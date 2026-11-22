@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { childEnv, command, executable, json, localPath, number, object, parse, string, timestamp } from "../system.ts";
-import { accessToken, AuthRequired, jwt, percent } from "./common.ts";
+import { accessToken, AuthRequired, jwt, LoginStale, percent, request } from "./common.ts";
 import type { System } from "../system.ts";
 import type { Adapter, Login, UsageContext } from "./common.ts";
 
@@ -14,9 +14,34 @@ const plans: ReadonlyMap<string, string> = new Map([
   ["pro", "Pro 200"], ["prolite", "Pro 100"], ["promax", "Pro 500"], ["team", "Business"], ["plus", "Plus"],
 ]);
 
-async function limits(ctx: UsageContext, login: Login) {
-  const binary = await executable(ctx.sys, ["codex"]);
-  if (!binary) throw new Error("Codex CLI is unavailable");
+function usageWindow(id: string, key: string, minutes: number | undefined, used: unknown, reset: unknown, label?: string) {
+  const kind = minutes === 10080 ? "weekly" : minutes === 43200 ? "monthly" :
+    minutes !== undefined && minutes <= 1440 ? "session" : "period";
+  const title = minutes === 300 ? "5-hour" : kind === "weekly" ? "Weekly" :
+    kind === "monthly" ? "Monthly" : minutes ? `${minutes}-minute` : key;
+  return percent(`${id}:${key}`, label ? `${label} ${title}` : title, kind, used, reset);
+}
+
+async function fileLimits(ctx: UsageContext, login: Login, accountId: string) {
+  // The usage endpoint and response fields follow Cloudroom's Codex collector (Apache 2.0).
+  if (login.token && login.expiresAt && Date.parse(login.expiresAt) <= Date.now()) throw new LoginStale();
+  const data = await request(ctx, "https://chatgpt.com/backend-api/wham/usage", login, undefined, {
+    "ChatGPT-Account-Id": accountId,
+  }).catch(error => {
+    if (error instanceof AuthRequired && error.message === "refused") throw new LoginStale();
+    throw error;
+  });
+  const rateLimit = object(data.rate_limit);
+  const windows = ["primary", "secondary"].flatMap(key => {
+    const window = object(rateLimit[`${key}_window`]);
+    const seconds = number(window.limit_window_seconds);
+    return usageWindow("codex", key, seconds === undefined ? undefined : seconds / 60, window.used_percent, window.reset_at);
+  });
+  const plan = string(data.plan_type);
+  return { plan: plan && (plans.get(plan.toLowerCase()) ?? plan), windows };
+}
+
+async function limits(ctx: UsageContext, login: Login, binary: string) {
   const dir = await mkdtemp(join(tmpdir(), "opnav-codex-"));
   const env = childEnv(ctx.sys.env);
   for (const key of ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_BASE_URL", "CODEX_API_KEY", "RUST_LOG", "RUST_LOG_STYLE"]) delete env[key];
@@ -77,12 +102,7 @@ async function limits(ctx: UsageContext, login: Login) {
       const label = string(bucket.limitName);
       return ["primary", "secondary"].flatMap(key => {
         const window = object(bucket[key]);
-        const minutes = number(window.windowDurationMins);
-        const kind = minutes === 10080 ? "weekly" : minutes === 43200 ? "monthly" :
-          minutes !== undefined && minutes <= 1440 ? "session" : "period";
-        const title = minutes === 300 ? "5-hour" : kind === "weekly" ? "Weekly" :
-          kind === "monthly" ? "Monthly" : minutes ? `${minutes}-minute` : key;
-        return percent(`${id}:${key}`, label ? `${label} ${title}` : title, kind, window.usedPercent, window.resetsAt);
+        return usageWindow(id, key, number(window.windowDurationMins), window.usedPercent, window.resetsAt, label);
       });
     });
     const cap = [legacy, ...buckets.map(([, value]) => object(value))]
@@ -119,16 +139,16 @@ async function savedAuth(sys: System) {
     const secret = sys.platform === "darwin"
       ? await command(sys, "security", ["find-generic-password", "-s", "Codex Auth", "-a", account, "-w"])
       : await command(sys, "secret-tool", ["lookup", "service", "Codex Auth", "username", account]);
-    if (secret || mode === "keyring") return parse(secret);
+    if (secret || mode === "keyring") return { auth: parse(secret), file: false };
   }
-  return json(path);
+  return { auth: await json(path), file: true };
 }
 
 export const codex: Adapter = {
   provider: "codex",
   commands: ["codex"],
   async detect(sys) {
-    const auth = await savedAuth(sys);
+    const { auth, file } = await savedAuth(sys);
     const tokens = object(auth.tokens);
     const token = string(sys.env.CODEX_ACCESS_TOKEN) ?? string(tokens.access_token);
     const refreshToken = sys.env.CODEX_ACCESS_TOKEN ? undefined : string(tokens.refresh_token);
@@ -145,12 +165,19 @@ export const codex: Adapter = {
     return { token, refreshToken, refreshExpiresAt: timestamp(tokens.refresh_token_expires_at),
       id: workspace && user ? `${workspace}\n${user}` : string(profile.sub ?? claims.sub) ?? string(profile.email)?.toLowerCase(),
       expiresAt: timestamp(claims.exp), plan: plan && (plans.get(plan.toLowerCase()) ?? plan),
-      metadata: { workspace, rawPlan: plan } };
+      metadata: { workspace, rawPlan: plan,
+        fileAccountId: file && !sys.env.CODEX_ACCESS_TOKEN ? string(tokens.account_id) : undefined } };
   },
   async read(ctx, login) {
     if (login.plan === "API key") return { windows: [], unavailable: "API key sign-ins have no subscription limits." };
+    const binary = await executable(ctx.sys, ["codex"]);
+    if (!binary) {
+      const accountId = string(login.metadata?.fileAccountId);
+      return accountId ? fileLimits(ctx, login, accountId) :
+        { windows: [], unavailable: "Install the Codex CLI to read usage on this machine." };
+    }
     accessToken(login);
     if (!login.metadata?.workspace) throw new Error("Codex account could not be identified");
-    return limits(ctx, login);
+    return limits(ctx, login, binary);
   },
 };

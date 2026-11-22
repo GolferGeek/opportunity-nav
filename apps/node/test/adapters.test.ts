@@ -78,6 +78,63 @@ test("Codex uses the app-server with isolated external auth and falls back to ac
   assert.deepEqual(JSON.parse(await readFile(join(home, ".codex/auth.json"), "utf8")), auth);
 });
 
+test("Codex reads file-store usage without the CLI and keeps it when the sign-in lapses", async t => {
+  const { home, save } = await workspace(t);
+  const path = ".codex/auth.json";
+  const auth = { tokens: { access_token: fixtureJwt({}), account_id: "fixture-workspace",
+    id_token: fixtureJwt({ "https://api.openai.com/auth": { chatgpt_user_id: "fixture-user" } }) } };
+  await save(path, auth);
+  const system = { home, env: {} };
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/codex-usage.json", import.meta.url), "utf8"));
+  const { accounts: [account] } = await readUsage({
+    system,
+    fetch: async (url, init) => {
+      assert.equal(String(url), "https://chatgpt.com/backend-api/wham/usage");
+      assert.equal(init?.method, "GET");
+      assert.equal(init?.body, undefined);
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("Authorization"), `Bearer ${auth.tokens.access_token}`);
+      assert.equal(headers.get("ChatGPT-Account-Id"), auth.tokens.account_id);
+      return Response.json(fixture);
+    },
+  });
+  assert.equal(account?.provider, "codex");
+  assert.equal(account?.status, "ok");
+  assert.equal(account?.plan, "Plus");
+  assert.deepEqual(account?.windows.map(({ id, label, kind, used, resetsAt }) => [id, label, kind, used, resetsAt]), [
+    ["codex:primary", "5-hour", "session", 12, "2030-01-01T00:00:00.000Z"],
+    ["codex:secondary", "Weekly", "weekly", 37, "2030-01-07T00:00:00.000Z"],
+  ]);
+  assert.deepEqual(JSON.parse(await readFile(join(home, path), "utf8")), auth);
+
+  const { accounts: [rejected] } = await readUsage({
+    system, fetch: async () => new Response(null, { status: 401 }),
+  });
+  assert.equal(rejected?.status, "stale");
+  assert.match(rejected?.message ?? "", /^Start Codex to refresh it\./);
+
+  await save(path, { tokens: { ...auth.tokens, access_token: fixtureJwt({ exp: 1 }) } });
+  const fetch = t.mock.fn(async () => new Response());
+  const { accounts: [expired] } = await readUsage({ system, fetch });
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(expired?.status, "stale");
+  assert.match(expired?.message ?? "", /^Start Codex to refresh it\./);
+  assert.equal(expired?.fetchedAt, account?.fetchedAt);
+  assert.deepEqual(expired?.windows.map(window => window.used), [12, 37]);
+});
+
+test("Codex suggests installing the CLI when the file fallback lacks an account id", async t => {
+  const { home, save } = await workspace(t);
+  await save(".codex/auth.json", { tokens: { access_token: fixtureJwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "fixture-claim-only" },
+  }) } });
+  const fetch = t.mock.fn(async () => new Response());
+  const { accounts: [account] } = await readUsage({ system: { home, env: {} }, fetch });
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(account?.status, "unavailable");
+  assert.equal(account?.message, "Install the Codex CLI to read usage on this machine.");
+});
+
 test("scoped Claude windows win over legacy windows and lapsed accounts stay visible", async t => {
   const { home, save } = await workspace(t);
   await save(".claude/.credentials.json", { claudeAiOauth: { accessToken: "test-claude" } });
