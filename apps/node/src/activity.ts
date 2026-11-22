@@ -7,7 +7,9 @@ export function redact(text: string): string {
     .replace(/(\b[\w-]*(?:token|secret|password|api[_-]?key|credentials)[\w-]*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1[redacted]")
     .replace(/(https?:\/\/)[^\s/@]+@/gi, "$1[redacted]@")
     .replace(/-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?(?:-----END [^-]+PRIVATE KEY-----|$)/g, "[redacted]")
-    .replace(/(?<![\w.-])[A-Za-z0-9+_/-]{40,}={1,2}(?![\w=])/g, "[redacted]")
+    .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[redacted]")
+    .replace(/[A-Za-z0-9+_/-]{40,}={0,2}/g, value =>
+      /\/$|[+=]/.test(value) || /[A-Z]/.test(value) && /[0-9]/.test(value) ? "[redacted]" : value)
     .replace(/[A-Za-z0-9+]{40,}|[A-Za-z0-9_-]{40,}/g, "[redacted]");
 }
 
@@ -19,15 +21,15 @@ export function shortText(value: unknown, limit = 300): string | undefined {
 export function toolLine(rawName: unknown, rawInput: unknown): string | undefined {
   const name = string(rawName)?.toLowerCase().replace(/[- ]/g, "_");
   const input = object(rawInput);
-  const path = shortText(input.file_path ?? input.path ?? input.filename ?? input.AbsolutePath ?? input.TargetFile);
-  const command = shortText(input.command ?? input.cmd ?? input.CommandLine, 120);
-  const query = shortText(input.pattern ?? input.query ?? input.Query ?? input.Pattern);
+  const path = shortText(input.file_path ?? input.path ?? input.filename ?? input.Path ?? input.RelativePath ?? input.AbsolutePath ?? input.TargetFile);
+  const command = shortText(string(input.command ?? input.cmd ?? input.CommandLine)?.split(/\r?\n/, 1)[0], 120);
+  const query = shortText(input.pattern ?? input.query ?? input.Query ?? input.SearchQuery ?? input.Pattern);
   switch (name) {
     case "bash": case "run_command": case "shell": case "terminal":
       return command ? `Ran: ${command}` : "Ran a command";
     case "read": case "read_file": case "view_file":
       return path ? `Read ${path}` : "Read a file";
-    case "edit": case "multiedit": case "write": case "edit_file": case "write_file":
+    case "edit": case "multiedit": case "write": case "edit_file": case "write_file": case "apply_patch":
     case "replace_file_content": case "multi_replace_file_content": case "write_to_file":
       return path ? `Edited ${path}` : "Edited a file";
     case "grep": case "glob": case "grep_search": case "find_by_name": case "websearch":
@@ -36,7 +38,10 @@ export function toolLine(rawName: unknown, rawInput: unknown): string | undefine
     case "ls": case "list_dir": return path ? `Listed ${path}` : "Listed files";
     case "agent": case "task": return "Started a subtask";
     case "webfetch": return "Opened a web page";
-    default: return;
+    default: {
+      const label = name && /^[a-z][a-z_]{0,59}$/.test(name) ? name.replaceAll("_", " ") : undefined;
+      return label ? `Used ${label}` : undefined;
+    }
   }
 }
 
