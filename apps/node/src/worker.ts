@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { JobEvent, NeedsInput } from "@opnav/shared";
 import type { Turn } from "@opnav/shared";
+import { claudeActivity, codexActivity } from "./activity.ts";
 import { geminiInvocation } from "./gemini.ts";
 import { executable, object, parse, string } from "./system.ts";
 import type { System } from "./system.ts";
@@ -149,6 +150,18 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
       if (event.inputTokens !== undefined || event.outputTokens !== undefined || event.costUsd !== undefined) emit(event);
     }
   };
+  let lastProgress: string | undefined;
+  let nextProgressAt = 0;
+  const progress = (messages: string[]) => {
+    for (const text of messages) {
+      if (text === lastProgress) continue;
+      lastProgress = text;
+      const now = Date.now();
+      if (now < nextProgressAt) continue;
+      nextProgressAt = now + 1000;
+      emit({ type: "progress", text });
+    }
+  };
   lines.on("line", line => {
     if (signal.aborted) return;
     if (gemini && gemini.format !== "stream-json") {
@@ -173,12 +186,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
     }
     if (turn.job.provider === "claude") {
       setSession(string(event.session_id));
-      if (event.type === "assistant") {
-        const content = object(event.message).content;
-        if (Array.isArray(content) && content.some(item => object(item).type === "tool_use")) {
-          emit({ type: "progress", text: "Claude is using tools." });
-        }
-      }
+      progress(claudeActivity(event));
       if (event.type === "result") {
         complete = true;
         failed = event.is_error === true || (typeof event.subtype === "string" && event.subtype !== "success");
@@ -202,9 +210,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
     }
     if (event.type === "error") failure = string(event.message) ?? failure;
     const item = object(event.item);
-    if (event.type === "item.started" && item.type === "command_execution") {
-      emit({ type: "progress", text: "Codex is running a command." });
-    }
+    progress(codexActivity(event));
     if (event.type === "item.completed" && item.type === "agent_message" && typeof item.text === "string") {
       result = item.text;
     }
