@@ -20,9 +20,31 @@
   "build": {
     "appId": "dev.opportunitynav.app",
     "productName": "Opportunity Nav",
-    "files": ["dist/**", "package.json"],
-    "directories": { "output": "release" },
-    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.productivity" },
-    "linux": { "target": ["AppImage", "tar.gz"], "category": "Development", "executableName": "opportunity-nav" }
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "category": "Development",
+      "executableName": "opportunity-nav"
+    },
+    "electronVersion": "38.8.6",
+    "electronDist": "../../node_modules/electron/dist",
+    "npmRebuild": false,
+    "artifactName": "opportunity-nav-${version}-${arch}.${ext}"
   }
 }
