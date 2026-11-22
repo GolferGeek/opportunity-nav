@@ -18,6 +18,16 @@ export type ProviderId = z.infer<typeof ProviderId>;
 export const Location = z.enum(["local", "cloud"]);
 export type Location = z.infer<typeof Location>;
 
+/**
+ * What runs a job's agent. direct = the node starts the provider's CLI itself
+ * in a worktree on that machine. cloudroom = the node hands the job to
+ * Cloudroom (cloudroom.dev), which runs the same CLI in its own cloud sandbox
+ * on the person's own subscription, starting from the repo's GitHub default
+ * branch and pushing the work to a branch.
+ */
+export const Runner = z.enum(["direct", "cloudroom"]);
+export type Runner = z.infer<typeof Runner>;
+
 export const Id = z.string().uuid();
 export const IsoTime = z.string().datetime({ offset: true });
 

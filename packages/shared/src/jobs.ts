@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IsoTime, Location, ProviderId } from "./common.ts";
+import { IsoTime, Location, ProviderId, Runner } from "./common.ts";
 
 /**
  * Job lifecycle (server-owned):
@@ -15,7 +15,8 @@ import { IsoTime, Location, ProviderId } from "./common.ts";
  * After `needs_input` the node releases the worker; when the person answers,
  * the server queues a `continue` turn pinned to the same node and checkout,
  * carrying the provider session id so the node resumes it
- * (`claude --resume <id>`, `codex exec resume <id>`).
+ * (`claude --resume <id>`, `codex exec resume <id>`). For a Cloudroom job the
+ * session id is the Cloudroom thread id (`thr_…`) and continuing is `room-cli thread tell`.
  */
 
 export const JobStatus = z.enum([
@@ -37,6 +38,8 @@ export const JobSpec = z.object({
   /** Exact model id; omitted = provider default. */
   model: z.string().optional(),
   location: Location,
+  /** What runs it: the node directly, or Cloudroom's cloud. */
+  runner: Runner.default("direct"),
   /** Optional reasoning effort hint, passed through when the provider supports one. */
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   /** Checkout to run in. Set by the server from the project's remote and the node's checkouts. */
@@ -51,6 +54,8 @@ export type JobSpec = z.infer<typeof JobSpec>;
 export const ClaimRequest = z.object({
   /** Providers this node will take right now (free capacity). */
   providers: z.array(ProviderId).min(1),
+  /** Providers this node will take right now as Cloudroom jobs (see NodeHeartbeat.cloudroom). */
+  cloudroomProviders: z.array(ProviderId).default([]),
   /** Max turns to hand out in this call. */
   max: z.number().int().positive().default(1),
 });

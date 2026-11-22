@@ -47,6 +47,11 @@ export const NodeHeartbeat = z.object({
    * edit = edit files in the checkout and run sandboxed commands; full = no sandbox or prompts.
    */
   autonomy: z.enum(["edit", "full"]).default("edit"),
+  /**
+   * Set when this machine can hand jobs to Cloudroom's cloud (the Cloudroom app
+   * is installed, running and signed in). Lists our provider ids it can run there.
+   */
+  cloudroom: z.object({ providers: z.array(ProviderId).default([]) }).optional(),
   /** Jobs this node currently holds leases on, so the server can expire the rest. */
   activeJobIds: z.array(z.string().uuid()).default([]),
 });
