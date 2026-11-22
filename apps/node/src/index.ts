@@ -10,6 +10,8 @@ import { handoffReport } from "./handoff.ts";
 import { runTurn } from "./lease.ts";
 import { localPath, system } from "./system.ts";
 import type { System } from "./system.ts";
+import { ollamaModels, runOllama } from "./ollama.ts";
+import { runWorker } from "./worker.ts";
 import type { Autonomy } from "./worker.ts";
 import { createUsageCollector } from "./usage/index.ts";
 
@@ -75,7 +77,12 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   const tasks = [
     loop("send a heartbeat", async () => {
       handoff = configured && await access(configured).then(() => configured, () => undefined);
-      const [detected, discovered] = await Promise.all([capabilities(sys), checkouts(sys, roots, options.checkoutDepth ?? 4)]);
+      const [detected, discovered, models] = await Promise.all([
+        capabilities(sys), checkouts(sys, roots, options.checkoutDepth ?? 4), ollamaModels(sys, transport, signal),
+      ]);
+      if (models.length) detected.push({
+        provider: "ollama", canRunJobs: true, signedIn: true, locations: ["local"], models,
+      });
       const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
         arch: arch(), autonomy, helperVersion: version, providers: detected, checkouts: discovered,
         handoff: handoff ? { dir: handoff } : undefined, activeJobIds: activeJobId ? [activeJobId] : [] });
@@ -98,15 +105,22 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
     loop("claim work", async () => {
       const interval = options.claimIntervalMs ?? 3000;
       if (!registered) return 250;
-      const available = new Map(providers.filter(p => p.canRunJobs && p.signedIn && p.cliPath).map(p => [p.provider, p.cliPath!]));
+      const available = new Map(providers.filter(p => p.canRunJobs && p.signedIn).map(p => [p.provider, p]));
       if (!available.size) return interval;
       const { turns } = ClaimResponse.parse(await post(NODE.claim, { providers: [...available.keys()], max: 1 }));
       const turn = turns[0];
-      const binary = turn && available.get(turn.job.provider);
-      if (turn && binary) {
+      const provider = turn && available.get(turn.job.provider);
+      if (turn && provider) {
         activeJobId = turn.job.id;
         try {
-          await runTurn(post, sys, binary, turn, signal, report, autonomy);
+          await runTurn(post, turn, signal, report, async (lifetime, emit) => {
+            if (!provider.locations.includes(turn.job.location)) {
+              return { type: "error", code: "provider_error", message: "The worker does not support this location.", retryable: false };
+            }
+            return provider.provider === "ollama"
+              ? runOllama(sys, transport, provider.models, turn, lifetime)
+              : runWorker(sys, provider.cliPath!, turn, lifetime, emit, autonomy);
+          });
         } finally {
           activeJobId = undefined;
         }
