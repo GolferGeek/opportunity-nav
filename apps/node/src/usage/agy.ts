@@ -11,7 +11,9 @@ export const agy: Adapter = {
     const secret = sys.platform === "darwin"
       ? await command(sys, "security", ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"])
       : await command(sys, "secret-tool", ["lookup", "service", "gemini", "username", "antigravity"]);
-    const saved = Object.keys(parse(secret)).length ? parse(secret) :
+    const prefix = "go-keyring-base64:";
+    const keyring = parse(secret.startsWith(prefix) ? Buffer.from(secret.slice(prefix.length), "base64").toString("utf8") : secret);
+    const saved = Object.keys(keyring).length ? keyring :
       await json(join(localPath(sys, sys.env.AGY_DIR ?? "~/.gemini/antigravity-cli"), "antigravity-oauth-token"));
     const oauth = object(saved.token);
     const token = string(oauth.access_token ?? saved.access_token);

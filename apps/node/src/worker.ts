@@ -38,7 +38,9 @@ export function workerArgs(turn: Turn): string[] {
 }
 
 export function terminal(text: string): Terminal {
-  const block = /(?:^|\n)```opnav-needs-input[ \t]*\r?\n([\s\S]*?)\r?\n```\s*$/.exec(text)?.[1];
+  const matches = [...text.matchAll(/(?:^|\n)```opnav-needs-input[ \t]*\r?\n((?:(?!^[ \t]*```).*\r?\n)*)```[ \t]*(?=\r?\n|$)/gm)];
+  const last = matches.at(-1);
+  const block = last && !text.slice(last.index + last[0].length).trim() ? last[1] : undefined;
   if (block) {
     const parsed = NeedsInput.safeParse(parse(block));
     if (parsed.success) return { type: "needs_input", needsInput: parsed.data };
@@ -59,6 +61,9 @@ function errorEvent(details: string, crashed = false): Terminal {
 
 export async function runWorker(sys: System, binary: string, turn: Turn, signal: AbortSignal,
   emit: (event: EventContent) => void): Promise<Terminal> {
+  if (turn.job.location !== "cloud") {
+    return { type: "error", code: "provider_error", message: "This worker only runs cloud models.", retryable: false };
+  }
   const args = workerArgs(turn);
   const prompt = `${turn.kind === "continue" ? turn.answer!.text : turn.job.prompt}\n\n${instruction}\n`;
   const group = sys.platform !== "win32";

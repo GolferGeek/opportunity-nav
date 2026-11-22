@@ -35,15 +35,48 @@ export function dashboard(ctx: UsageContext, login: Login, method: string, body:
   });
 }
 
+async function dailyTokens(ctx: UsageContext, login: Login): Promise<UsageWindow[]> {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const start = new Date(today);
+    start.setDate(start.getDate() - index);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { start, end };
+  });
+  const readings = await Promise.all(days.map(async ({ start, end }) => {
+    const data = await dashboard(ctx, login, "GetAggregatedUsageEvents", {
+      startDate: String(+start), endDate: String(+end),
+    }).catch(() => undefined);
+    if (!Array.isArray(data?.aggregations)) return [];
+    const totals = new Map<string, number>();
+    for (const raw of data.aggregations) {
+      const row = object(raw);
+      const model = string(row.modelIntent) ?? "Cursor";
+      const total = [row.inputTokens, row.outputTokens, row.cacheReadTokens, row.cacheWriteTokens]
+        .reduce<number>((sum, value) => sum + Math.max(0, number(value) ?? 0), 0);
+      if (total > 0) totals.set(model, (totals.get(model) ?? 0) + total);
+    }
+    const day = [start.getFullYear(), String(start.getMonth() + 1).padStart(2, "0"),
+      String(start.getDate()).padStart(2, "0")].join("-");
+    return [...totals].map(([model, used]): UsageWindow => ({
+      id: `tokens:${day}:${model}`, label: `${model} tokens for ${day}`, kind: "period", unit: "tokens", used, model,
+    }));
+  }));
+  return readings.flat();
+}
+
 export const cursor: Adapter = {
   provider: "cursor",
   commands: ["cursor-agent", "agent", "cursor"],
   detect: cursorLogin,
   async read(ctx, login) {
-    const [period, plan] = await Promise.all([
+    const [period, response] = await Promise.all([
       dashboard(ctx, login, "GetCurrentPeriodUsage"),
-      dashboard(ctx, login, "GetPlanInfo").catch(() => object(undefined)),
+      dashboard(ctx, login, "GetPlanInfo"),
     ]);
+    const plan = object(response.planInfo ?? response);
     const weekly = plan.includedUsagePeriod === 2 || /^(INCLUDED_USAGE_PERIOD_)?WEEKLY$/i.test(string(plan.includedUsagePeriod) ?? "");
     const reset = weekly ? plan.includedUsageResetsAt : period.billingCycleEnd;
     const included = object(period.planUsage);
@@ -52,7 +85,7 @@ export const cursor: Adapter = {
       ["auto", "Auto models", included.autoPercentUsed],
       ["named", "Named models", included.apiPercentUsed],
     ].flatMap(([id, label, value]) => percent(String(id), String(label), weekly ? "weekly" : "monthly",
-      number(value) === undefined ? undefined : Number(value) * 100, reset));
+      value, reset));
     const spend = object(period.spendLimitUsage);
     const used = number(spend.individualUsed);
     const limit = number(spend.individualLimit);
@@ -61,6 +94,7 @@ export const cursor: Adapter = {
         unit: "usd", used: used / 100, limit: limit / 100, resetsAt: timestamp(period.billingCycleEnd) };
       windows.push(window);
     }
+    if (windows.length) windows.push(...await dailyTokens(ctx, login));
     return { plan: string(plan.planName) ?? string(period.membershipType) ?? string(plan.planType), windows };
   },
 };

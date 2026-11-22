@@ -1,0 +1,19 @@
+{
+  "GetCurrentPeriodUsage": {
+    "billingCycleEnd": 4070908800000,
+    "planUsage": { "totalPercentUsed": 25, "autoPercentUsed": 5, "apiPercentUsed": 40 },
+    "spendLimitUsage": { "individualUsed": 100, "individualLimit": 500 }
+  },
+  "GetPlanInfo": { "planInfo": { "planName": "Fixture plan", "includedUsagePeriod": "WEEKLY", "includedUsageResetsAt": 4070908800 } },
+  "GetAggregatedUsageEvents": { "aggregations": [{ "modelIntent": "fixture-model", "inputTokens": "5", "outputTokens": "7" }] },
+  "GetSandUsageStatus": { "hasNonZeroIncludedLimit": true, "nextResetTimestampUtc": "2099-01-01T00:00:00Z" },
+  "loadCodeAssist": { "cloudaicompanionProject": { "id": "test-project" }, "paidTier": { "name": "Fixture tier" } },
+  "retrieveUserQuotaSummary": {
+    "groups": [
+      { "displayName": "Gemini", "buckets": [{ "bucketId": "gemini_5h", "remainingFraction": 0.5 }] },
+      { "displayName": "Claude/GPT", "buckets": [{ "bucketId": "shared_weekly", "resetTime": "2099-01-01T00:00:00Z" }] }
+    ]
+  },
+  "billing": { "config": { "monthlyLimit": { "val": 500 }, "used": { "val": 100 }, "billingPeriodEnd": "2099-01-01T00:00:00Z" } },
+  "billing?format=credits": { "config": { "currentPeriod": { "type": "WEEK", "end": "2099-01-01T00:00:00Z" }, "creditUsagePercent": 30 } }
+}

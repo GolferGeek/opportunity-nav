@@ -67,19 +67,21 @@ export async function runTurn(post: Post, sys: System, binary: string, turn: Tur
     type: "error", code: "worker_crashed", message: "The worker could not start.", retryable: false,
   })).then(emit);
   let retry = 250;
+  let pending: JobEvent[] = [];
   try {
     while (!lifetime.aborted) {
       if (!queue.length) {
         await delay(100);
         continue;
       }
-      if (cancelled) {
+      if (cancelled && !pending.length) {
         const index = queue.findIndex(event => terminalTypes.has(event.type));
         const previous = queue[index];
         if (previous) queue[index] = { type: "error", code: "cancelled", message: "The turn was cancelled.",
           retryable: false, seq: previous.seq, at: previous.at };
       }
-      const events = queue.slice(0, 50);
+      if (!pending.length) pending = queue.slice(0, 50);
+      const events = pending;
       try {
         const ack = object(await post(NODE.events(jobs), { leaseId: turn.leaseId, events }, lifetime)).lastSeq;
         if (typeof ack !== "number" || !Number.isSafeInteger(ack) || ack < events[0]!.seq) {
@@ -88,6 +90,7 @@ export async function runTurn(post: Post, sys: System, binary: string, turn: Tur
         const delivered = events.filter(event => event.seq <= ack);
         if (delivered.some(event => terminalTypes.has(event.type))) return;
         queue.splice(0, delivered.length);
+        pending = events.slice(delivered.length);
         retry = 250;
       } catch (error) {
         lost(error);

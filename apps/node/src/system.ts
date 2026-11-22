@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -24,7 +24,9 @@ export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 export async function command(sys: System, file: string, args: string[], cwd?: string): Promise<string> {
   try {
-    const { stdout } = await exec(file, args, { cwd, env: childEnv(sys.env), timeout: 4000, maxBuffer: 256 * 1024 });
+    const run = exec(file, args, { cwd, env: childEnv(sys.env), timeout: 4000, maxBuffer: 256 * 1024 });
+    run.child.stdin?.end();
+    const { stdout } = await run;
     return stdout.trim();
   } catch {
     return "";
@@ -38,6 +40,7 @@ export async function executable(sys: System, names: string[]): Promise<string |
       const file = join(root, name);
       try {
         await access(file, constants.X_OK);
+        if (!(await stat(file)).isFile()) continue;
         return file;
       } catch {
         // Try the next directory.

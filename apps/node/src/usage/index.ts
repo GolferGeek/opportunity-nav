@@ -8,6 +8,7 @@ import { cursor } from "./cursor.ts";
 import { gemini } from "./gemini.ts";
 import { grok } from "./grok.ts";
 import { grokbot } from "./grokbot.ts";
+import { usageCache } from "./cache.ts";
 import { AuthRequired } from "./common.ts";
 import type { Adapter, Login, UsageContext } from "./common.ts";
 
@@ -15,6 +16,7 @@ export const adapters = [claude, codex, cursor, grokbot, agy, grok, gemini];
 
 export function createUsageCollector(ctx: UsageContext) {
   const cache = new Map<string, UsageAccount>();
+  const disk = usageCache(ctx.sys);
 
   async function collect(adapter: Adapter, login: Login): Promise<{ account?: UsageAccount; retry: boolean }> {
     const key = () => login.id && createHash("sha256").update(login.id).digest("hex");
@@ -28,13 +30,16 @@ export function createUsageCollector(ctx: UsageContext) {
         fetchedAt: reading.unavailable ? undefined : new Date().toISOString(), windows: reading.windows,
       });
       if (!reading.unavailable && !account.windows.length) throw new Error("No usage windows");
-      if (account.status === "ok") cache.set(`${adapter.provider}:${accountKey}`, account);
+      if (account.status === "ok") {
+        cache.set(`${adapter.provider}:${accountKey}`, account);
+        await disk.write(account);
+      }
       return { account, retry: false };
     } catch (error) {
       const auth = error instanceof AuthRequired;
       const accountKey = key();
       if (!accountKey) return { retry: !auth };
-      const last = cache.get(`${adapter.provider}:${accountKey}`);
+      const last = cache.get(`${adapter.provider}:${accountKey}`) ?? await disk.read(adapter.provider, accountKey);
       const now = Date.now();
       return {
         retry: !auth,
@@ -52,8 +57,12 @@ export function createUsageCollector(ctx: UsageContext) {
 
   return async (): Promise<{ report: UsageReport; retry: boolean }> => {
     const results = await Promise.all(adapters.map(async adapter => {
-      const login = await adapter.detect(ctx.sys);
-      return login ? collect(adapter, login) : { account: undefined, retry: false };
+      try {
+        const login = await adapter.detect(ctx.sys);
+        return login ? await collect(adapter, login) : { account: undefined, retry: false };
+      } catch {
+        return { account: undefined, retry: true };
+      }
     }));
     return {
       report: { observedAt: new Date().toISOString(), accounts: results.flatMap(result => result.account ? [result.account] : []) },

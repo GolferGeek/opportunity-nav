@@ -1,11 +1,13 @@
 /* Usage collection adapted from omarchy-agent-usage-codex (MIT). */
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { childEnv, executable, json, localPath, number, object, parse, string, timestamp } from "../system.ts";
+import { childEnv, command, executable, json, localPath, number, object, parse, string, timestamp } from "../system.ts";
 import { AuthRequired, jwt, percent } from "./common.ts";
+import type { System } from "../system.ts";
 import type { Adapter, Login, UsageContext } from "./common.ts";
 
 async function limits(ctx: UsageContext, login: Login) {
@@ -102,11 +104,27 @@ async function limits(ctx: UsageContext, login: Login) {
   }
 }
 
+async function savedAuth(sys: System) {
+  const home = localPath(sys, sys.env.CODEX_HOME ?? "~/.codex");
+  const path = join(home, "auth.json");
+  const config = await readFile(join(home, "config.toml"), "utf8").catch(() => "");
+  const mode = /^\s*cli_auth_credentials_store\s*=\s*["'](file|keyring|auto)["']/m.exec(config)?.[1];
+  if (mode === "keyring" || mode === "auto") {
+    const canonical = await realpath(home).catch(() => home);
+    const account = "cli|" + createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+    const secret = sys.platform === "darwin"
+      ? await command(sys, "security", ["find-generic-password", "-s", "Codex Auth", "-a", account, "-w"])
+      : await command(sys, "secret-tool", ["lookup", "service", "Codex Auth", "username", account]);
+    if (secret || mode === "keyring") return parse(secret);
+  }
+  return json(path);
+}
+
 export const codex: Adapter = {
   provider: "codex",
   commands: ["codex"],
   async detect(sys) {
-    const auth = await json(join(localPath(sys, sys.env.CODEX_HOME ?? "~/.codex"), "auth.json"));
+    const auth = await savedAuth(sys);
     const tokens = object(auth.tokens);
     const token = string(sys.env.CODEX_ACCESS_TOKEN) ?? string(tokens.access_token);
     if (!token) return auth.OPENAI_API_KEY || sys.env.OPENAI_API_KEY || auth.auth_mode === "apikey"
