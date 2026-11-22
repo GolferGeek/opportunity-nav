@@ -104,6 +104,44 @@ test("handoff keeps recent activity and carries the brief into the finished repo
   assert.deepEqual(done.questions, ["Ship it?", "Which branch?"]);
 });
 
+test("handoff keeps a wrapped numbered or bulleted question whole", async t => {
+  const home = await fixture(t);
+  const dir = join(home, "Work/handoff");
+  await mkdir(join(dir, "done"), { recursive: true });
+  await writeFile(join(dir, "done/wrapped.md"), [
+    "# Report", "", "## Questions for Matt",
+    "1. Should backups keep the date in front of the file name, or use",
+    "   a prefix? Recommended: the date.",
+    "2. Ship it?",
+    "- Which branch should this land on, main",
+    "  or a feature branch?",
+    "- Delete the old folder once the copy",
+    "is checked?",
+    "",
+    "## Files", "- file.txt",
+  ].join("\n"));
+  const report = ExternalWorkReport.parse(await handoffReport(system({ home }), dir));
+  assert.deepEqual(report.items[0]?.questions, [
+    "Should backups keep the date in front of the file name, or use a prefix? Recommended: the date.",
+    "Ship it?",
+    "Which branch should this land on, main or a feature branch?",
+    "Delete the old folder once the copy is checked?",
+  ]);
+});
+
+test("a running handoff is updated by its START line and log, not the time it was queued", async t => {
+  const home = await fixture(t);
+  const dir = join(home, "Work/handoff");
+  await Promise.all(["working", "logs"].map(stage => mkdir(join(dir, stage), { recursive: true })));
+  await writeFile(join(dir, "STATUS.md"), "2099-01-01 10:00:00 START running (in /checkout; commit=0 push=0)");
+  await writeFile(join(dir, "working/running.md"), "# Work in progress");
+  await writeFile(join(dir, "logs/running.log"), JSON.stringify({ type: "assistant", at: "2099-01-02T12:00:00Z",
+    message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "src/a.ts" } }] } }));
+  const item = ExternalWorkReport.parse(await handoffReport(system({ home }), dir)).items[0]!;
+  assert.equal(item.startedAt, new Date("2099-01-01 10:00:00").toISOString());
+  assert.equal(item.updatedAt, "2099-01-02T12:00:00.000Z");
+});
+
 test("normalizes remotes and only treats a final valid fence as a question", () => {
   assert.equal(normalizeRemote("git@GitHub.COM:GolferGeek/repo.git"), "github.com/GolferGeek/repo");
   assert.equal(normalizeRemote("https://user:placeholder@github.com/GolferGeek/repo.git/?x=1"), "github.com/GolferGeek/repo");

@@ -23,20 +23,31 @@ function questionsFrom(text: string): string[] {
   const questions: string[] = [];
   let inQuestions = false;
   let fenced = false;
+  // A list item that wraps onto the next line is still one question.
+  let open = false;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (/^```|^~~~/.test(line)) fenced = !fenced;
-    if (fenced) continue;
+    if (fenced) { open = false; continue; }
+    if (!line) { open = false; continue; }
     const heading = /^#{1,6}\s+(.+)$/.exec(line)?.[1];
     if (heading) {
       inQuestions = /^(?:open )?questions?\b/i.test(heading);
+      open = false;
       continue;
     }
     const inline = /^(?:[-*]\s+)?\*{0,2}(?:open )?questions?\*{0,2}:\*{0,2}\s*(.*)$/i.exec(line);
     if (inline) inQuestions = true;
+    const item = /^(?:[-*+] |\d+[.)] )/.test(line);
+    if (inQuestions && open && !inline && !item && questions.length) {
+      questions[questions.length - 1] += " " + line;
+      continue;
+    }
     const value = (inline?.[1] ?? line.replace(/^(?:[-*+] |\d+[.)] )/, "")).trim();
+    open = false;
     if (inQuestions && value && !/^(?:none|n\/a|no questions)(?:[. ]|$)/i.test(value) && !/^```|^~~~/.test(value)) {
       questions.push(value);
+      open = true;
     }
   }
   return questions;
@@ -141,16 +152,21 @@ export async function handoffReport(sys: System, dir: string, briefs = new Map<s
             briefs.set(name, redact(`${task.get("title") ?? title} | repo: ${task.get("repo") ?? repo ?? "default"} | priority: ${task.get("priority") ?? "normal"}\n${saved.replace(headerPattern, "").trim()}`).slice(0, 20_000));
           }
         }
+        // The watcher's event stream (Claude stream-json) when it writes one; else its plain log.
+        const activity = detailed ? await logActivity(join(dir, "logs", id + ".events.jsonl")).then(a => a?.length ? a
+          : logActivity(join(dir, "logs", id + ".log"))) : undefined;
+        // A brief keeps its mtime when it moves to working/, so that is when it was queued.
+        // While it runs, the last update is the latest of that, its START line and its log.
+        const updatedAt = [info.mtime.toISOString(), ...(folder === "working" ? [start?.at, activity?.at(-1)?.at] : [])]
+          .filter((at): at is string => !!at).sort().at(-1)!;
         items.set(name, { source: "handoff", externalId: name, title, status,
-          repo: repo && localPath(sys, repo), updatedAt: info.mtime.toISOString(),
+          repo: repo && localPath(sys, repo), updatedAt,
           startedAt: start?.at ?? previous?.startedAt ?? info.mtime.toISOString(),
           summary: folder === "done" ? done.get(id) ?? done.get(name) : undefined,
           questions: folder === "done" ? questionsFrom(redact(body)) : [],
           detail: detailed ? {
             brief: briefs.get(name),
-            // The watcher's event stream (Claude stream-json) when it writes one; else its plain log.
-            activity: await logActivity(join(dir, "logs", id + ".events.jsonl")).then(a => a?.length ? a
-              : logActivity(join(dir, "logs", id + ".log"))),
+            activity,
             report: folder === "done" ? redact(body).slice(0, 50_000) : undefined,
           } : undefined,
         });
