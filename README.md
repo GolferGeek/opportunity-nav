@@ -54,10 +54,12 @@ Create an agent token in **Settings → Connect an agent**. Give the agent the c
 
 Start a job from any project: pick the agent, the model, and local or cloud. A machine that has the project's repo checked out and that agent signed in picks it up. If the agent needs you, the job stops with a question in **What's happening**. Your answer resumes the same session on the same machine.
 
-Jobs commit to a new branch, `opnav/<job id>`, and never push. You review first.
+Coding jobs run in a separate Git worktree on branch `opnav/<first 8 characters of the job ID>`. Workers commit there and never push. The worktree stays available for follow-up turns and review under `~/.local/share/opportunity-nav/worktrees`, or `$XDG_DATA_HOME/opportunity-nav/worktrees`.
+
+Run `opnav-node worktrees --prune` on the worker machine to remove clean, idle worktrees whose branch has been merged into its starting branch or whose job was first seen more than 14 days ago. Git branches stay available for review.
 
 How much a job can do on a machine is that machine's choice (`OPNAV_WORKER_AUTONOMY`):
-- `edit` (the default): edit files in the checkout and run commands in a sandbox.
+- `edit` (the default): edit files in the job worktree and run commands in a sandbox.
 - `full`: no sandbox and no prompts.
 
 ## Developing
