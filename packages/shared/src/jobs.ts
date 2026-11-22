@@ -53,12 +53,12 @@ export type JobSpec = z.infer<typeof JobSpec>;
 
 export const ClaimRequest = z.object({
   /** Providers this node will take right now (free capacity). */
-  providers: z.array(ProviderId).min(1),
+  providers: z.array(ProviderId),
   /** Providers this node will take right now as Cloudroom jobs (see NodeHeartbeat.cloudroom). */
   cloudroomProviders: z.array(ProviderId).default([]),
   /** Max turns to hand out in this call. */
   max: z.number().int().positive().default(1),
-});
+}).refine((r) => r.providers.length + r.cloudroomProviders.length > 0, "Offer at least one agent, direct or through Cloudroom.");
 export type ClaimRequest = z.infer<typeof ClaimRequest>;
 
 export const Turn = z.object({
