@@ -5,6 +5,7 @@ import { HttpError } from "../errors.ts";
 import { answerQuestion, cancelJob, createJob, getJob } from "./jobs.ts";
 import { createNode, listTree, pathOf, TreeNodePatch, updateNode, type TreeNode } from "./tree.ts";
 import { dashboard, happening } from "./views.ts";
+import { messageGrokBot } from "./outbound.ts";
 
 /**
  * Everything an agent can do, in one place. A2A skills and MCP tools are thin
@@ -106,6 +107,11 @@ export const actions = {
     description: "Stop a job.",
     input: z.object({ jobId: z.string().uuid() }),
     run: (sql: Sql, userId: string, i: any) => cancelJob(sql, userId, i.jobId),
+  },
+  message_grok_bot: {
+    description: "Send Grok Bot (Matt's CEO agent) a request or question. It works on its own and writes results back into Opportunity Nav; nothing comes back in this reply.",
+    input: z.object({ message: z.string().min(1).max(8000) }),
+    run: (_sql: Sql, _userId: string, i: any, by: string) => messageGrokBot(i.message, by === "you" ? "Matt" : by.replace(/^agent:/, "")),
   },
   clear_roadblock: {
     description: "Mark a roadblock as cleared.",

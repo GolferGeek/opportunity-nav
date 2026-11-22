@@ -33,6 +33,7 @@ const TOOL_WORDS: Record<string, string> = {
   get_job: "Checked a job",
   cancel_job: "Stopped a job",
   clear_roadblock: "Cleared a roadblock",
+  message_grok_bot: "Sent Grok Bot a message",
 };
 
 function systemPrompt(cfg: ChatConfig, scope: { id: string; path: string[] } | null) {
@@ -42,6 +43,7 @@ function systemPrompt(cfg: ChatConfig, scope: { id: string; path: string[] } | n
     "You can only act through the opportunity-nav tools. Look things up (get_tree, get_overview) before guessing ids.",
     "When they mention something they want to do, offer to record it, or just record it if they clearly asked: add it as an item (kind \"item\") under the right project, with a short title and the details in notes.",
     `When they want this app itself to look or work differently, it's the project whose repo is ${cfg.appRepo} (find it with get_tree). Talk it through until the change is clear, then start a job on that project (provider claude) with a precise, self-contained description: what to change, where in the UI, and how they'll know it's right. Tell them it will land on its own branch for them to review before it ships. Don't claim it's done until the job succeeds.`,
+    "Grok Bot is Matt's CEO agent and knows a lot about his work. When something is better asked of it, or Matt says to ask it, use message_grok_bot with a clear, self-contained request. Its answer arrives later as changes in the tree, not in this chat.",
     "For real work on any other project (code, writing, research), start a job there rather than doing it yourself.",
     "Write plainly and briefly. One thought per line. No headers. Say what you did after you do it.",
   ].join("\n");
