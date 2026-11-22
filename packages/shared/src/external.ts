@@ -17,6 +17,22 @@ export const ExternalWork = z.object({
   url: z.string().url().optional(),
   /** Short plain-words summary, e.g. the DONE line. */
   summary: z.string().optional(),
+  /** When the work started, if known. */
+  startedAt: IsoTime.optional(),
+  /**
+   * What to show when the person clicks in. Send it for running/waiting items
+   * and the newest finished ones; keep it small (it's re-sent every report).
+   */
+  detail: z
+    .object({
+      /** What the work was asked to do (e.g. the handoff brief). */
+      brief: z.string().max(20_000).optional(),
+      /** Recent activity, oldest first, plain text, newest ~100 lines. */
+      activity: z.array(z.object({ at: IsoTime.optional(), text: z.string().max(2_000) })).max(200).optional(),
+      /** The finished report, if any. */
+      report: z.string().max(50_000).optional(),
+    })
+    .optional(),
   /** Questions for the person found in the report, one per item. */
   questions: z.array(z.string()).default([]),
   updatedAt: IsoTime,
