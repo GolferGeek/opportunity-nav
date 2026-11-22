@@ -3,7 +3,6 @@ import { createInterface } from "node:readline";
 import { JobEvent, NeedsInput } from "@opnav/shared";
 import type { Turn } from "@opnav/shared";
 import { claudeActivity, codexActivity, shortText, toolLine } from "./activity.ts";
-import { geminiInvocation } from "./gemini.ts";
 import { executable, object, parse, string } from "./system.ts";
 import type { System } from "./system.ts";
 import { openWorktree, WorktreeError, worktreeEnv } from "./worktrees.ts";
@@ -103,9 +102,8 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
     (sys.platform === "darwin" || sys.platform === "linux" &&
       (await Promise.all([executable(sys, ["bwrap"]), executable(sys, ["socat"])])).every(Boolean));
   if (turn.kind === "continue" && !turn.answer) throw new Error("Continue turn needs an answer");
-  const gemini = turn.job.provider === "gemini" ? await geminiInvocation(sys, binary, turn) : undefined;
-  const args = gemini?.args ?? workerArgs(turn, autonomy, claudeSandbox);
-  const input = gemini?.input ?? (turn.kind === "continue" ? turn.answer!.text : turn.job.prompt);
+  const args = workerArgs(turn, autonomy, claudeSandbox);
+  const input = turn.kind === "continue" ? turn.answer!.text : turn.job.prompt;
   const prompt = `${input}\n\n${needsInputInstruction}\nYour work is already on branch ${branch}. Commit there and do not push.\n`;
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
   const group = sys.platform !== "win32";
@@ -131,7 +129,6 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   let result: string | undefined;
   let session = turn.providerSessionId;
   let stderr = "";
-  let stdout = "";
   let failure = "";
   let failed = false;
   let crashed = false;
@@ -180,26 +177,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   };
   lines.on("line", line => {
     if (signal.aborted) return;
-    if (gemini && gemini.format !== "stream-json") {
-      stdout += line + "\n";
-      return;
-    }
     const event = parse(line);
-    if (gemini) {
-      if (event.type === "init") setSession(string(event.session_id));
-      if (event.type === "message" && event.role === "assistant" && typeof event.content === "string") {
-        result = event.delta === true ? (result ?? "") + event.content : event.content;
-      }
-      if (event.type === "tool_use") emit({ type: "progress", text: "Gemini CLI is using tools." });
-      if (event.type === "error") failure = string(event.message) ?? failure;
-      if (event.type === "result") {
-        complete = true;
-        failed = event.status !== "success";
-        failure = string(object(event.error).message) ?? failure;
-        usage(event.stats);
-      }
-      return;
-    }
     if (turn.job.provider === "agy") {
       const step = object(event.step_update);
       const final = object(event.result);
@@ -270,20 +248,6 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   signal.removeEventListener("abort", abort);
   lines.close();
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
-  if (gemini?.format === "json") {
-    const event = parse(stdout);
-    setSession(string(event.session_id));
-    result = string(event.response);
-    failed = !!event.error;
-    failure = string(object(event.error).message) ?? failure;
-    complete = result !== undefined;
-  }
-  if (gemini?.format === "text") {
-    result = stdout.trimEnd();
-    complete = !!result;
-  }
   if (exit !== 0 || failed || !complete) return errorEvent(`${failure}\n${stderr}`, crashed || !complete && !failed);
-  const outcome = terminal(result ?? "");
-  if (gemini && outcome.type === "needs_input") await gemini.remember(result!);
-  return outcome;
+  return terminal(result ?? "");
 }

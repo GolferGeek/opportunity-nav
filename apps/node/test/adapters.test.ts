@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { createCipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { readUsage } from "../src/index.ts";
+import { keychainSecret, system } from "../src/system.ts";
 
 function fixtureJwt(fields: object) {
   return "fixture." + Buffer.from(JSON.stringify(fields)).toString("base64url") + ".fixture";
@@ -237,4 +238,54 @@ test("Grok Bot reads the Grok Bot app's own sign-in on macOS, or says how to all
   assert.equal(cursor?.status, "ok");
   assert.equal(cursor?.windows[0]?.used, 28);
   assert.equal(cursor?.accountKey, account?.accountKey);
+});
+
+test("Keychain reads check the item first and don't ask again for hours after a refusal", async t => {
+  const { home } = await workspace(t);
+  const bin = join(home, "bin");
+  const calls = join(home, "calls");
+  // "refused" exists but its password read fails (the person clicked Deny); "ok" reads fine; "absent" isn't there.
+  await fakeCommand(bin, "security", `echo "$*" >> "${calls}"
+case "$*" in
+  "find-generic-password -s refused -a me"|"find-generic-password -s ok -a me") echo 'keychain: "login"' ;;
+  "find-generic-password -s ok -a me -w") echo fixture-secret ;;
+  *) exit 44 ;;
+esac
+`);
+  const sys = system({ home, env: { PATH: bin }, platform: "darwin" });
+  const log = async () => (await readFile(calls, "utf8").catch(() => "")).trim().split("\n").filter(Boolean);
+  assert.equal(await keychainSecret(sys, "absent", "me"), "");
+  assert.deepEqual(await log(), ["find-generic-password -s absent -a me"], "a missing item never gets a password read");
+  assert.equal(await keychainSecret(sys, "refused", "me"), "");
+  assert.equal(await keychainSecret(sys, "refused", "me"), "");
+  assert.equal((await log()).filter(line => line.startsWith("find-generic-password -s refused")).length, 2,
+    "after a refusal, the next check doesn't run security at all");
+  assert.equal(await keychainSecret(sys, "ok", "me"), "fixture-secret");
+  assert.equal(await keychainSecret(system({ home, env: { PATH: bin }, platform: "linux" }), "ok", "me"), "", "Mac only");
+});
+
+test("Cursor never borrows the Grok Bot app's sign-in for a different account", async t => {
+  const { home, save } = await workspace(t);
+  const bin = join(home, "bin");
+  const appSubject = "google-oauth2|user_other";
+  const token = fixtureJwt({ sub: appSubject, exp: Date.now() / 1000 + 3600 });
+  const key = pbkdf2Sync("fixture-password", "saltysalt", 1003, 16, "sha1");
+  const encrypt = (text: string) => {
+    const cipher = createCipheriv("aes-128-cbc", key, Buffer.alloc(16, " "));
+    return Buffer.concat([Buffer.from("v10"), cipher.update(text), cipher.final()]).toString("base64");
+  };
+  const active = createHash("sha256").update(appSubject).digest("hex");
+  await save("Library/Application Support/Grok Bot/sand-secrets.json", { version: 1, "cursor-accounts": JSON.stringify({
+    active, accounts: { [active]: { "cursor-access-token": encrypt(token) } },
+  }) });
+  // The saved Cursor sign-in is a different account, and refused.
+  await save(".config/cursor/auth.json", { accessToken: fixtureJwt({ sub: "google-oauth2|user_mine", exp: Date.now() / 1000 + 3600 }) });
+  await fakeCommand(bin, "security", `[ "$*" = "find-generic-password -s Grok Bot Safe Storage -a Grok Bot Key -w" ] && echo fixture-password\n`);
+  const fetch = async (url: string | URL | Request, init?: RequestInit) =>
+    new Headers(init?.headers).get("Authorization") === `Bearer ${token}`
+      ? Response.json({ planUsage: { totalPercentUsed: 99 } }) : new Response(null, { status: 401 });
+  const { accounts } = await readUsage({ system: { home, env: { PATH: bin }, platform: "darwin" }, fetch });
+  const cursor = accounts.find(a => a.provider === "cursor");
+  assert.equal(cursor?.status, "auth_required");
+  assert.ok(!cursor?.windows.some(w => w.used === 99), "the other account's usage isn't shown on this card");
 });

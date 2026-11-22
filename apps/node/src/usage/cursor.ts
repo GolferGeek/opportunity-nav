@@ -1,7 +1,7 @@
 /* Usage collection adapted from omarchy-agent-usage-cursor and collectors.py (MIT). */
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { command, json, localPath, number, object, parse, string, timestamp } from "../system.ts";
+import { command, json, keychainSecret, localPath, number, object, parse, string, timestamp } from "../system.ts";
 import type { System } from "../system.ts";
 import { AuthRequired, jwt, percent, request } from "./common.ts";
 import type { Adapter, Login, UsageContext } from "./common.ts";
@@ -14,8 +14,8 @@ import type { UsageWindow } from "@opnav/shared";
  */
 async function secretStore(sys: System, file: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (sys.platform === "darwin") {
-    const [accessToken, refreshToken] = await Promise.all(["cursor-access-token", "cursor-refresh-token"]
-      .map(service => command(sys, "security", ["find-generic-password", "-s", service, "-a", "cursor-user", "-w"])));
+    const accessToken = await keychainSecret(sys, "cursor-access-token", "cursor-user");
+    const refreshToken = await keychainSecret(sys, "cursor-refresh-token", "cursor-user");
     return { accessToken, refreshToken };
   }
   if (sys.platform === "linux" && file.storedIn === "os-secret-store") {
@@ -122,8 +122,9 @@ export const cursor: Adapter = {
       // On a Mac the Grok Bot app holds a live Cursor sign-in too. Use it only for the same account.
       const { grokbotApp } = await import("./grokbot.ts");
       const app = await grokbotApp(ctx.sys);
-      if (app?.token && (app.id === login.id || !login.token)) {
-        login = { ...app, id: login.id ?? app.id };
+      // Borrow it only for the same account, so one account's usage never shows under another's card.
+      if (app?.token && app.id && (app.id === login.id || !login.id)) {
+        login = { ...app, id: app.id };
         return fetchUsage(login).catch(retry => {
           throw retry instanceof AuthRequired && retry.message === "refused" ? refused() : retry;
         });

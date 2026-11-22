@@ -89,3 +89,23 @@ export function timestamp(value: unknown): string | undefined {
   const date = new Date(numeric !== undefined ? numeric * (numeric < 1e11 ? 1000 : 1) : string(value) ?? "");
   return Number.isFinite(date.valueOf()) && date.valueOf() > 0 ? date.toISOString() : undefined;
 }
+
+const KEYCHAIN_RETRY_MS = 6 * 3_600_000;
+const keychainRefused = new Map<string, number>();
+
+/**
+ * Read a macOS Keychain password without nagging. Checking that the item
+ * exists never prompts; reading it can, the first time, so allow time for an
+ * answer. If it's refused, don't ask again for six hours.
+ */
+export async function keychainSecret(sys: System, service: string, account: string): Promise<string> {
+  if (sys.platform !== "darwin") return "";
+  const key = `${sys.home}\0${service}\0${account}`;
+  if (Date.now() - (keychainRefused.get(key) ?? -Infinity) < KEYCHAIN_RETRY_MS) return "";
+  const exists = await command(sys, "security", ["find-generic-password", "-s", service, "-a", account]);
+  if (!exists) return "";
+  const secret = await command(sys, "security", ["find-generic-password", "-s", service, "-a", account, "-w"], undefined, 120_000);
+  if (secret) keychainRefused.delete(key);
+  else keychainRefused.set(key, Date.now());
+  return secret;
+}

@@ -1,6 +1,6 @@
 /* Usage collection adapted from omarchy-agent-usage-agy (MIT). */
 import { join } from "node:path";
-import { command, json, localPath, number, object, parse, string, timestamp } from "../system.ts";
+import { command, json, keychainSecret, localPath, number, object, parse, string, timestamp } from "../system.ts";
 import { jwt, percent, request } from "./common.ts";
 import type { Adapter } from "./common.ts";
 
@@ -9,7 +9,7 @@ export const agy: Adapter = {
   commands: ["agy"],
   async detect(sys) {
     const secret = sys.platform === "darwin"
-      ? await command(sys, "security", ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"])
+      ? await keychainSecret(sys, "gemini", "antigravity")
       : await command(sys, "secret-tool", ["lookup", "service", "gemini", "username", "antigravity"]);
     const prefix = "go-keyring-base64:";
     const keyring = parse(secret.startsWith(prefix) ? Buffer.from(secret.slice(prefix.length), "base64").toString("utf8") : secret);
