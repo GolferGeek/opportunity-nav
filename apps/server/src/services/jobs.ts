@@ -101,7 +101,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
       select t.id as turn_id, t.kind, t.answer_id, j.*, p.repo_remote
       from turns t join jobs j on j.id = t.job_id join tree_nodes p on p.id = j.project_id
       where t.status = 'queued' and j.user_id = ${userId} and j.status = 'queued' and not j.cancel_requested
-        and ((j.runner = 'direct' and j.provider in ${tx(req.providers)})
+        and ((j.runner = 'direct' and j.provider in ${tx(req.providers.length ? req.providers : ["-"])})
           or (j.runner = 'cloudroom' and j.provider in ${tx(req.cloudroomProviders.length ? req.cloudroomProviders : ["-"])}))
         and p.repo_remote in ${tx(remotes)}
         and (j.node_id is null or j.node_id = ${machineId})
