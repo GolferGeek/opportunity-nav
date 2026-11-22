@@ -49,7 +49,7 @@ if (${resume}) {
     const turn: Turn = {
       turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
       job: { id: randomUUID(), projectId: randomUUID(), title: "Gemini", provider: "gemini",
-        location: "cloud", checkoutPath: checkout, prompt: "Draft a note." },
+        runner: "direct", location: "cloud", checkoutPath: checkout, prompt: "Draft a note." },
     };
     const events: EventContent[] = [];
     const run = (input: Turn) => runWorker(sys, binary, input, new AbortController().signal, event => events.push(event));

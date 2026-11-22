@@ -20,7 +20,7 @@ async function fixture(t: TestContext) {
   initRepo(checkout);
   const sys = system({ home, env: { PATH: process.env.PATH, XDG_DATA_HOME: data } });
   const job: JobSpec = { id: randomUUID(), projectId: randomUUID(), checkoutPath: checkout,
-    title: "Test", prompt: "Test the worktree", provider: "claude", location: "cloud" };
+    title: "Test", prompt: "Test the worktree", provider: "claude", runner: "direct", location: "cloud" };
   return { sys, home, data, checkout, job };
 }
 

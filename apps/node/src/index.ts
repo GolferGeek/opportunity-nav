@@ -6,6 +6,7 @@ import { ClaimResponse, DEFAULT_HEARTBEAT_INTERVAL_SEC, DEFAULT_USAGE_INTERVAL_S
 import type { ProviderCapability } from "@opnav/shared";
 import { nodeApi } from "./api.ts";
 import { capabilities, checkouts } from "./capabilities.ts";
+import { cloudroomDetector, runCloudroom } from "./cloudroom.ts";
 import { handoffReport } from "./handoff.ts";
 import { runTurn } from "./lease.ts";
 import { localPath, system } from "./system.ts";
@@ -51,6 +52,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
     controller.abort();
   });
   const collect = createUsageCollector({ sys, fetch: transport, signal });
+  const detectCloudroom = cloudroomDetector(sys);
   let time = { heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC, usageIntervalSec: DEFAULT_USAGE_INTERVAL_SEC };
   let registered = false;
   let providers: ProviderCapability[] = [];
@@ -78,14 +80,15 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   const tasks = [
     loop("send a heartbeat", async () => {
       handoff = configured && await access(configured).then(() => configured, () => undefined);
-      const [detected, discovered, models] = await Promise.all([
-        capabilities(sys), checkouts(sys, roots, options.checkoutDepth ?? 4), ollamaModels(sys, transport, signal),
+      const [detected, discovered, models, cloudroom] = await Promise.all([
+        capabilities(sys), checkouts(sys, roots, options.checkoutDepth ?? 4), ollamaModels(sys, transport, signal), detectCloudroom(),
       ]);
       if (models.length) detected.push({
         provider: "ollama", canRunJobs: true, signedIn: true, locations: ["local"], models,
       });
       const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
         arch: arch(), autonomy, helperVersion: version, providers: detected, checkouts: discovered,
+        cloudroom: cloudroom && { providers: cloudroom.providers },
         handoff: handoff ? { dir: handoff } : undefined, activeJobIds: activeJobId ? [activeJobId] : [] });
       time = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
       providers = detected;
@@ -109,20 +112,26 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       const interval = options.claimIntervalMs ?? 3000;
       if (!registered) return 250;
       const available = new Map(providers.filter(p => p.canRunJobs && p.signedIn).map(p => [p.provider, p]));
-      if (!available.size) return interval;
-      const { turns } = ClaimResponse.parse(await post(NODE.claim, { providers: [...available.keys()], max: 1 }));
+      const cloudroom = await detectCloudroom();
+      const cloudroomProviders = cloudroom?.providers ?? [];
+      if (!available.size && !cloudroomProviders.length) return interval;
+      const { turns } = ClaimResponse.parse(await post(NODE.claim, {
+        providers: [...available.keys()], cloudroomProviders, max: 1,
+      }));
       const turn = turns[0];
       const provider = turn && available.get(turn.job.provider);
-      if (turn && provider) {
+      const cloud = turn?.job.runner === "cloudroom";
+      if (turn && (cloud ? cloudroom?.providers.includes(turn.job.provider) : provider)) {
         activeJobId = turn.job.id;
         try {
           await runTurn(post, turn, signal, report, async (lifetime, emit) => {
-            if (!provider.locations.includes(turn.job.location)) {
+            if (cloud) return runCloudroom(sys, cloudroom!.binary, turn, lifetime, emit, { email: cloudroom!.email });
+            if (!provider!.locations.includes(turn.job.location)) {
               return { type: "error", code: "provider_error", message: "The worker does not support this location.", retryable: false };
             }
-            return provider.provider === "ollama"
-              ? runOllama(sys, transport, provider.models, turn, lifetime)
-              : runWorker(sys, provider.cliPath!, turn, lifetime, emit, autonomy);
+            return provider!.provider === "ollama"
+              ? runOllama(sys, transport, provider!.models, turn, lifetime)
+              : runWorker(sys, provider!.cliPath!, turn, lifetime, emit, autonomy);
           });
         } finally {
           activeJobId = undefined;
