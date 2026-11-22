@@ -4,6 +4,8 @@
 # and publish it on the tailnet over HTTPS with `tailscale serve`.
 #   deploy/install-server-macos.sh [--https-port 8443] [--db opportunity_nav]
 set -euo pipefail
+# Everything runs inside main() so bash has read the whole file before `git pull` can replace it.
+main() {
 HTTPS_PORT=8443
 DB=opportunity_nav
 while [ $# -gt 0 ]; do case "$1" in --https-port) HTTPS_PORT=$2; shift 2;; --db) DB=$2; shift 2;; *) echo "Unknown option $1"; exit 2;; esac; done
@@ -71,3 +73,5 @@ curl -sf http://127.0.0.1:4317/healthz >/dev/null || { echo "Server didn't come 
 echo "• Tailnet HTTPS"
 $TS serve --bg --https="$HTTPS_PORT" http://127.0.0.1:4317 >/dev/null
 echo "Up at $PUBLIC_URL"
+}
+main "$@"
