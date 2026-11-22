@@ -56,6 +56,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   let providers: ProviderCapability[] = [];
   let activeJobId: string | undefined;
   let handoff: string | undefined;
+  const handoffBriefs = new Map<string, string>();
   const configured = options.handoffDir === false ? undefined : localPath(sys, options.handoffDir ?? "~/Work/handoff");
   const roots = options.checkoutRoots ?? ["~/Projects", "~/projects"];
   const wait = (ms: number) => sleep(ms, undefined, { signal }).catch(() => {});
@@ -99,8 +100,10 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
     }, 10_000),
     loop("upload handoff work", async () => {
       if (!registered) return 250;
-      if (handoff) await post(NODE.external, ExternalWorkReport.parse(await handoffReport(sys, handoff)));
-      return options.externalIntervalMs ?? 15_000;
+      if (!handoff) return options.externalIntervalMs ?? 60_000;
+      const external = ExternalWorkReport.parse(await handoffReport(sys, handoff, handoffBriefs));
+      await post(NODE.external, external);
+      return options.externalIntervalMs ?? (external.items.some(item => item.status === "running") ? 10_000 : 60_000);
     }, 5000),
     loop("claim work", async () => {
       const interval = options.claimIntervalMs ?? 3000;

@@ -13,7 +13,7 @@ export async function capabilities(sys: System): Promise<ProviderCapability[]> {
     const version = output.match(/\b\d+\.\d+\.\d+(?:[-+][\w.-]+)?\b/)?.[0];
     return {
       provider: adapter.provider, cliPath, version, signedIn: !!login,
-      canRunJobs: !!cliPath && (adapter.provider === "claude" || adapter.provider === "codex" || adapter.provider === "gemini"),
+      canRunJobs: !!cliPath && (adapter.provider === "claude" || adapter.provider === "codex" || adapter.provider === "gemini" || adapter.provider === "agy"),
       locations: ["cloud"], models: [],
     } satisfies ProviderCapability;
   }));

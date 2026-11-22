@@ -60,10 +60,10 @@ test("usage keeps only the matching account's last good reading and rolls over e
   assert.deepEqual(changed.windows, []);
 });
 
-test("handoff keeps newest stage, DONE line and open questions", async t => {
+test("handoff keeps recent activity and carries the brief into the finished report", async t => {
   const home = await fixture(t);
   const dir = join(home, "Work/handoff");
-  await Promise.all(["inbox", "working", "done"].map(stage => mkdir(join(dir, stage), { recursive: true })));
+  await Promise.all(["inbox", "working", "done", "logs"].map(stage => mkdir(join(dir, stage), { recursive: true })));
   await writeFile(join(dir, "STATUS.md"), [
     "2026-11-22 09:17:41 START task (in /checkout; commit=0 push=0)",
     "2026-11-22 DONE task: changed a file.",
@@ -71,14 +71,34 @@ test("handoff keeps newest stage, DONE line and open questions", async t => {
   await writeFile(join(dir, "inbox/task.md"), "---\ntitle: Fix the thing\nrepo: ~/project # inline comment\n---\nBrief");
   await writeFile(join(dir, "working/running.md"), "# Work in progress");
   await writeFile(join(dir, "inbox/queued.md"), "# Work queued");
+  const messages = Array.from({ length: 105 }, (_, index) => JSON.stringify({
+    type: "assistant", at: "2026-11-22T15:18:00Z",
+    message: { content: [{ type: "tool_use", name: "Read", input: { file_path: `src/${index}.ts` } }] },
+  }));
+  messages.push(JSON.stringify({ type: "user", message: {
+    content: [{ type: "tool_result", content: "tool output fixture" }],
+  } }));
+  messages.push(JSON.stringify({ type: "assistant", message: {
+    content: [{ type: "text", text: "Found sk-example-value." }],
+  } }));
+  await writeFile(join(dir, "logs/task.log"), messages.join("\n"));
+  const briefs = new Map<string, string>();
+  await handoffReport(system({ home }), dir, briefs);
+  await rm(join(dir, "inbox/task.md"));
   await writeFile(join(dir, "done/task.md"), "# Report\n\n## Questions for the user\n- Ship it?\n- Which branch?\n\n## Files\n- file.txt");
-  const report = ExternalWorkReport.parse(await handoffReport(system({ home }), dir));
+  const report = ExternalWorkReport.parse(await handoffReport(system({ home }), dir, briefs));
   assert.deepEqual(report.complete, ["handoff"]);
   assert.equal(report.items.find(item => item.externalId === "queued.md")?.status, "queued");
   assert.equal(report.items.find(item => item.externalId === "running.md")?.status, "running");
   const done = report.items.find(item => item.externalId === "task.md")!;
   assert.equal(done.status, "succeeded");
-  assert.equal(done.title, "Fix the thing");
+  assert.equal(done.title, "Report");
+  assert.equal(done.startedAt, new Date("2026-11-22 09:17:41").toISOString());
+  assert.equal(done.detail?.brief, "Fix the thing | repo: ~/project | priority: normal\nBrief");
+  assert.equal(done.detail?.activity?.length, 100);
+  assert.deepEqual(done.detail?.activity?.[0], { at: "2026-11-22T15:18:00.000Z", text: "Read src/6.ts" });
+  assert.equal(done.detail?.activity?.at(-1)?.text, "Found [redacted]");
+  assert.match(done.detail?.report ?? "", /^# Report/);
   assert.equal(done.repo, "/checkout");
   assert.equal(done.summary, "2026-11-22 DONE task: changed a file.");
   assert.deepEqual(done.questions, ["Ship it?", "Which branch?"]);

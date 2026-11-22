@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { JobEvent, NeedsInput } from "@opnav/shared";
 import type { Turn } from "@opnav/shared";
+import { claudeActivity, codexActivity, shortText, toolLine } from "./activity.ts";
 import { geminiInvocation } from "./gemini.ts";
 import { executable, object, parse, string } from "./system.ts";
 import type { System } from "./system.ts";
@@ -38,6 +39,11 @@ export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbo
     ];
     return ["-p", "--output-format", "stream-json", "--verbose", ...permissions, ...model,
       ...(job.effort ? ["--effort", job.effort] : []), ...(resume ? ["--resume", resume] : [])];
+  }
+  if (job.provider === "agy") {
+    const permissions = autonomy === "full" ? ["--dangerously-skip-permissions"] : ["--mode", "accept-edits", "--sandbox"];
+    return ["-p", "", "--input-format", "stream-json", "--output-format", "stream-json", ...permissions, ...model,
+      ...(job.effort ? ["--effort", job.effort] : []), ...(resume ? ["--conversation", resume] : [])];
   }
   if (job.provider === "codex") {
     const permissions = autonomy === "full" ? ["--dangerously-bypass-approvals-and-sandbox"]
@@ -149,6 +155,29 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
       if (event.inputTokens !== undefined || event.outputTokens !== undefined || event.costUsd !== undefined) emit(event);
     }
   };
+  const agyText = new Map<number, string>();
+  let lastProgress: string | undefined;
+  let pendingProgress: string | undefined;
+  let nextProgressAt = 0;
+  let progressTimer: ReturnType<typeof setTimeout> | undefined;
+  const sendProgress = () => {
+    progressTimer = undefined;
+    const text = pendingProgress;
+    pendingProgress = undefined;
+    if (!text || text === lastProgress || signal.aborted) return;
+    lastProgress = text;
+    nextProgressAt = performance.now() + 1000;
+    emit({ type: "progress", text });
+  };
+  const progress = (messages: string[]) => {
+    for (const text of messages) {
+      pendingProgress = text;
+      if (progressTimer) continue;
+      const delay = nextProgressAt - performance.now();
+      if (delay <= 0) sendProgress();
+      else progressTimer = setTimeout(sendProgress, Math.ceil(delay));
+    }
+  };
   lines.on("line", line => {
     if (signal.aborted) return;
     if (gemini && gemini.format !== "stream-json") {
@@ -171,14 +200,38 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
       }
       return;
     }
-    if (turn.job.provider === "claude") {
-      setSession(string(event.session_id));
-      if (event.type === "assistant") {
-        const content = object(event.message).content;
-        if (Array.isArray(content) && content.some(item => object(item).type === "tool_use")) {
-          emit({ type: "progress", text: "Claude is using tools." });
+    if (turn.job.provider === "agy") {
+      const step = object(event.step_update);
+      const final = object(event.result);
+      setSession(string(event.conversation_id ?? step.conversation_id ?? final.conversation_id));
+      if (event.event === "step_update" && step.step_type === "tool" && step.state === "ACTIVE") {
+        const tool = object(step.tool_info);
+        const text = toolLine(tool.name ?? step.tool_name, tool.parameters);
+        if (text) progress([text]);
+      }
+      if (event.event === "step_update" && step.step_type === "agent_response" && typeof step.step_index === "number") {
+        const index = step.step_index;
+        const text = ((agyText.get(index) ?? "") + (typeof step.text_delta === "string" ? step.text_delta : "")).slice(0, 4096);
+        if (step.state === "DONE") {
+          agyText.delete(index);
+          const message = shortText(text);
+          if (message) progress([message]);
+        } else {
+          agyText.set(index, text);
         }
       }
+      if (event.event === "result") {
+        complete = true;
+        failed = final.status !== "SUCCESS";
+        result = typeof final.response === "string" ? final.response : undefined;
+        if (failed) failure = string(final.error ?? final.response) ?? failure;
+        usage(final.usage);
+      }
+      return;
+    }
+    if (turn.job.provider === "claude") {
+      setSession(string(event.session_id));
+      progress(claudeActivity(event));
       if (event.type === "result") {
         complete = true;
         failed = event.is_error === true || (typeof event.subtype === "string" && event.subtype !== "success");
@@ -202,17 +255,18 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
     }
     if (event.type === "error") failure = string(event.message) ?? failure;
     const item = object(event.item);
-    if (event.type === "item.started" && item.type === "command_execution") {
-      emit({ type: "progress", text: "Codex is running a command." });
-    }
+    progress(codexActivity(event));
     if (event.type === "item.completed" && item.type === "agent_message" && typeof item.text === "string") {
       result = item.text;
     }
   });
-  proc.stdin.end(prompt);
+  proc.stdin.end(turn.job.provider === "agy"
+    ? JSON.stringify({ event: "user", message: { role: "user", content: prompt } }) + "\n"
+    : prompt);
   const exit = await new Promise<number | null>(resolve => proc.once("close", resolve));
   if (signal.aborted) kill(true);
   clearTimeout(killTimer);
+  clearTimeout(progressTimer);
   signal.removeEventListener("abort", abort);
   lines.close();
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
