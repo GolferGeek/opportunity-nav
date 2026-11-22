@@ -42,6 +42,11 @@ export const NodeHeartbeat = z.object({
   checkouts: z.array(Checkout).default([]),
   /** Set when this node watches a handoff directory (Studio). */
   handoff: z.object({ dir: z.string() }).optional(),
+  /**
+   * How much a worker may do on this machine without asking, set by the machine's owner.
+   * edit = edit files in the checkout and run sandboxed commands; full = no sandbox or prompts.
+   */
+  autonomy: z.enum(["edit", "full"]).default("edit"),
   /** Jobs this node currently holds leases on, so the server can expire the rest. */
   activeJobIds: z.array(z.string().uuid()).default([]),
 });
