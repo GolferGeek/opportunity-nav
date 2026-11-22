@@ -33,9 +33,15 @@ export function cloudroomDetector(sys: System) {
     if (!binary) return;
     const status = object(await room(sys, binary, ["cloud", "status", "--json"]));
     if (status.ready !== true || !status.account || !Array.isArray(status.harnesses)) return;
-    const ids = new Set(status.harnesses.map(harness => object(harness).id));
-    const providers = (Object.keys(harnesses) as ProviderId[]).filter(provider => ids.has(harnesses[provider]));
-    return { binary, providers, email: string(object(status.account).email) };
+    const defaults = new Map(status.harnesses.map(harness => [object(harness).id, string(object(harness).model)]));
+    const providers = (Object.keys(harnesses) as ProviderId[]).filter(provider => defaults.has(harnesses[provider]));
+    // Cloud threads need an explicit model; use each harness's own default when a job doesn't name one.
+    const models: Partial<Record<ProviderId, string>> = {};
+    for (const provider of providers) {
+      const model = defaults.get(harnesses[provider]);
+      if (model) models[provider] = model;
+    }
+    return { binary, providers, models, email: string(object(status.account).email) };
   }
   return () => {
     if (!cached || performance.now() >= expires) {
@@ -81,7 +87,8 @@ function pendingQuestion(raw: unknown) {
 class CloudroomError extends Error {}
 
 export async function runCloudroom(sys: System, binary: string, turn: Turn, signal: AbortSignal,
-  emit: (event: EventContent) => void, options: { email?: string; pollMs?: number; provisioningMs?: number } = {}): Promise<Terminal> {
+  emit: (event: EventContent) => void,
+  options: { email?: string; defaultModel?: string; pollMs?: number; provisioningMs?: number } = {}): Promise<Terminal> {
   const { job } = turn;
   const harness = harnesses[job.provider];
   const resume = turn.kind === "continue";
@@ -146,7 +153,7 @@ export async function runCloudroom(sys: System, binary: string, turn: Turn, sign
       signal.throwIfAborted();
       // Keep the response on abort so we can stop a thread accepted during the request.
       const spawned = object(await room(sys, binary, ["thread", "spawn", "--project", id, "--machine", "cloud",
-        "--provider", harness, ...(job.model ? ["--model", job.model] : []),
+        "--provider", harness, ...((job.model ?? options.defaultModel) ? ["--model", (job.model ?? options.defaultModel)!] : []),
         ...(job.effort ? ["--reasoning-level", job.effort] : []), "--title", job.title,
         "--request-id", requestId, "--prompt-file", file, "--json"]));
       const result = string(spawned.id);
@@ -227,7 +234,12 @@ export async function runCloudroom(sys: System, binary: string, turn: Turn, sign
       type: "error", code: "provider_error", message: error.message, retryable: false,
     };
     const { stderr, stdout } = object(error);
-    return errorEvent(`${string(stderr) ?? ""}\n${string(stdout) ?? ""}`);
+    const details = `${string(stderr) ?? ""}\n${string(stdout) ?? ""}`;
+    const mapped = errorEvent(details);
+    // Pass Cloudroom's own one-line reason through when it isn't a sign-in or limit problem.
+    const reason = /^Error: (.{1,300})$/m.exec(details)?.[1];
+    return mapped.type === "error" && mapped.code === "provider_error" && reason
+      ? { ...mapped, message: `Cloudroom: ${clean(reason)}` } : mapped;
   } finally {
     if (signal.aborted && thread) await room(sys, binary, ["thread", "stop", thread]).catch(() => {});
     if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});

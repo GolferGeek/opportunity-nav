@@ -125,7 +125,8 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
         activeJobId = turn.job.id;
         try {
           await runTurn(post, turn, signal, report, async (lifetime, emit) => {
-            if (cloud) return runCloudroom(sys, cloudroom!.binary, turn, lifetime, emit, { email: cloudroom!.email });
+            if (cloud) return runCloudroom(sys, cloudroom!.binary, turn, lifetime, emit,
+              { email: cloudroom!.email, defaultModel: cloudroom!.models[turn.job.provider] });
             if (!provider!.locations.includes(turn.job.location)) {
               return { type: "error", code: "provider_error", message: "The worker does not support this location.", retryable: false };
             }
