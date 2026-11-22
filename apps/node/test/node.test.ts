@@ -15,7 +15,7 @@ import { handoffReport } from "../src/handoff.ts";
 import { system } from "../src/system.ts";
 import { createUsageCollector } from "../src/usage/index.ts";
 import { terminal } from "../src/worker.ts";
-import { initRepo } from "./fixtures/git.ts";
+import { git, initRepo } from "./fixtures/git.ts";
 
 async function fixture(t: TestContext) {
   const home = await mkdtemp(join(tmpdir(), "opnav-test-"));
@@ -117,6 +117,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
   const checkout = join(home, "project");
   await mkdir(checkout);
   initRepo(checkout);
+  git(checkout, "remote", "add", "origin", "https://github.com/example/demo.git");
   const bin = join(home, "bin");
   await mkdir(bin);
   await symlink(process.execPath, join(bin, "node"));
@@ -125,6 +126,11 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
     await copyFile(new URL("./fixtures/worker.mjs", import.meta.url), path);
     await chmod(path, 0o700);
   }
+  const room = join(bin, "room-cli");
+  await copyFile(new URL("./fixtures/room-cli.mjs", import.meta.url), room);
+  await chmod(room, 0o700);
+  const roomState = join(home, "room.json");
+  await writeFile(roomState, "{}");
   await mkdir(join(home, ".codex"));
   await writeFile(join(home, ".codex/auth.json"), '{"auth_mode":"apikey"}');
   await mkdir(join(home, "Work/handoff/inbox"), { recursive: true });
@@ -134,18 +140,21 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
   const turns: Turn[] = [
     { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
       job: { id: randomUUID(), projectId, title: "Question", prompt: "Ask me", provider: "claude",
-        model: "test-model", effort: "high", location: "cloud", checkoutPath: checkout } },
+        model: "test-model", effort: "high", runner: "direct", location: "cloud", checkoutPath: checkout } },
     { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "continue",
       job: { id: randomUUID(), projectId, title: "Resume", prompt: "Ask me", provider: "codex",
-        model: "test-model", effort: "high", location: "cloud", checkoutPath: checkout, nodeId },
+        model: "test-model", effort: "high", runner: "direct", location: "cloud", checkoutPath: checkout, nodeId },
       answer: { answerId: randomUUID(), questionId: randomUUID(), text: "Yes" }, providerSessionId: "session-from-claude" },
     { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
       job: { id: randomUUID(), projectId, title: "Cancel", prompt: "Wait", provider: "claude",
-        model: "test-model", effort: "high", location: "cloud", checkoutPath: checkout } },
+        model: "test-model", effort: "high", runner: "direct", location: "cloud", checkoutPath: checkout } },
   ];
   turns.push({ turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
     job: { id: randomUUID(), projectId, title: "Local draft", prompt: "Draft a note", provider: "ollama",
-      model: "fixture:latest", location: "local", checkoutPath: "" } });
+      model: "fixture:latest", runner: "direct", location: "local", checkoutPath: "" } });
+  turns.push({ turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
+    job: { id: randomUUID(), projectId, title: "Cloud draft", prompt: "Draft a note", provider: "agy",
+      runner: "cloudroom", location: "cloud", checkoutPath: checkout } });
   const received = new Map<string, JobEvent[]>();
   let claim = 0;
   let firstBatch = "";
@@ -169,6 +178,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
       if (req.url === NODE.heartbeat) {
         const heartbeat = NodeHeartbeat.parse(body);
         assert.equal(heartbeat.autonomy, "edit");
+        assert.deepEqual(heartbeat.cloudroom, { providers: ["claude", "codex", "agy"] });
         assert.deepEqual(heartbeat.providers.find(value => value.provider === "ollama")?.models, ["fixture:latest"]);
         assert.ok(heartbeat.providers.some(value => value.provider === "claude" && value.canRunJobs && value.signedIn));
         active ||= heartbeat.activeJobIds.includes(turns[2]!.job.id);
@@ -183,7 +193,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
         return respond({ accepted: 1 });
       }
       if (req.url === NODE.claim) {
-        assert.deepEqual(ClaimRequest.parse(body), { providers: ["claude", "codex", "ollama"], max: 1 });
+        assert.deepEqual(ClaimRequest.parse(body), { providers: ["claude", "codex", "ollama"], cloudroomProviders: ["claude", "codex", "agy"], max: 1 });
         const turn = turns[claim++];
         if (turn) turn.leaseExpiresAt = new Date(Date.now() + 3500).toISOString();
         return respond({ turns: turn ? [turn] : [] });
@@ -222,7 +232,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
   const statuses: string[] = [];
   const service = startNode({
     serverUrl: `http://127.0.0.1:${address.port}`, token: "node-fixture", claimIntervalMs: 25,
-    externalIntervalMs: 25, system: { home, env: { PATH: [bin, process.env.PATH].join(delimiter), OPNAV_NODE_TOKEN: "node-fixture" } },
+    externalIntervalMs: 25, system: { home, env: { PATH: [bin, process.env.PATH].join(delimiter), OPNAV_NODE_TOKEN: "node-fixture", ROOM_FIXTURE: roomState } },
     onStatus: message => statuses.push(message),
     fetch: async (url, init) => {
       if (String(url).startsWith("https://api.anthropic.com")) return new Response(await usageFixture());
@@ -240,7 +250,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
     },
   });
   try {
-    for (let i = 0; i < 160 && !received.get(turns[3]!.job.id)?.some(event => event.type === "result"); i++) {
+    for (let i = 0; i < 160 && !received.get(turns[4]!.job.id)?.some(event => event.type === "result"); i++) {
       if (requestError) throw requestError;
       await sleep(30);
     }
@@ -255,6 +265,10 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
     assert.ok(last?.type === "error" && last.code === "cancelled");
     const draft = received.get(turns[3]!.job.id)?.at(-1);
     assert.ok(draft?.type === "result" && draft.summary === "A short note.");
+    const cloud = received.get(turns[4]!.job.id);
+    assert.deepEqual(cloud?.map(event => event.type), ["session", "progress", "usage", "result"]);
+    assert.ok(cloud?.[0]?.type === "session" && cloud[0].providerSessionId === "thr_demo");
+    assert.ok(cloud?.at(-1)?.type === "result");
     revoked = true;
     for (let i = 0; i < 60 && !statuses.includes("The node token was revoked."); i++) await sleep(30);
     assert.ok(statuses.includes("The node token was revoked."));

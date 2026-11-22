@@ -12,7 +12,7 @@ type WithoutEnvelope<T> = T extends unknown ? Omit<T, "seq" | "at"> : never;
 export type EventContent = WithoutEnvelope<JobEvent>;
 export type Terminal = Extract<EventContent, { type: "error" | "result" | "needs_input" }>;
 
-const instruction = [
+export const needsInputInstruction = [
   "If you need the user to answer before you can continue, end your final reply with an opnav-needs-input fenced block.",
   "Inside the block put only JSON with a nonempty question string, optional options (up to six strings), and optional context string.",
   "For example:",
@@ -66,7 +66,7 @@ export function terminal(text: string): Terminal {
   return { type: "result", summary: text };
 }
 
-function errorEvent(details: string, crashed = false): Terminal {
+export function errorEvent(details: string, crashed = false): Terminal {
   if (/unauthorized|not logged in|authentication|auth required|invalid api key|please log in/i.test(details)) {
     return { type: "error", code: "auth_required", message: "Sign in to the worker and try again.", retryable: false };
   }
@@ -106,7 +106,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   const gemini = turn.job.provider === "gemini" ? await geminiInvocation(sys, binary, turn) : undefined;
   const args = gemini?.args ?? workerArgs(turn, autonomy, claudeSandbox);
   const input = gemini?.input ?? (turn.kind === "continue" ? turn.answer!.text : turn.job.prompt);
-  const prompt = `${input}\n\n${instruction}\nYour work is already on branch ${branch}. Commit there and do not push.\n`;
+  const prompt = `${input}\n\n${needsInputInstruction}\nYour work is already on branch ${branch}. Commit there and do not push.\n`;
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
   const group = sys.platform !== "win32";
   const proc = spawn(binary, args, { cwd, env: worktreeEnv(sys), detached: group,
