@@ -8,7 +8,10 @@ if (process.argv.includes("--version")) {
 let prompt = "";
 for await (const chunk of process.stdin) prompt += chunk;
 assert.match(prompt, /opnav-needs-input/);
-assert.match(prompt, /Commit your work on a new branch opnav\/[a-f0-9]{8} and do not push/);
+const { execFileSync } = await import("node:child_process");
+const branch = execFileSync("git", ["branch", "--show-current"], { encoding: "utf8" }).trim();
+assert.match(branch, /^opnav\/[a-f0-9]{8}$/);
+assert.ok(prompt.includes(`Your work is already on branch ${branch}. Commit there and do not push.`));
 assert.equal(process.env.OPNAV_NODE_TOKEN, undefined);
 const args = process.argv.slice(2);
 const codex = basename(process.argv[1]) === "codex";

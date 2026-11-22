@@ -3,8 +3,9 @@ import { createInterface } from "node:readline";
 import { JobEvent, NeedsInput } from "@opnav/shared";
 import type { Turn } from "@opnav/shared";
 import { geminiInvocation } from "./gemini.ts";
-import { childEnv, executable, object, parse, string } from "./system.ts";
+import { executable, object, parse, string } from "./system.ts";
 import type { System } from "./system.ts";
+import { openWorktree, WorktreeError, worktreeEnv } from "./worktrees.ts";
 
 type WithoutEnvelope<T> = T extends unknown ? Omit<T, "seq" | "at"> : never;
 export type EventContent = WithoutEnvelope<JobEvent>;
@@ -75,6 +76,23 @@ export async function runWorker(sys: System, binary: string, turn: Turn, signal:
   if (turn.job.location !== "cloud") {
     return { type: "error", code: "provider_error", message: "This worker only runs cloud models.", retryable: false };
   }
+  if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
+  const worktree = await openWorktree(sys, turn.job).catch(error => {
+    if (error instanceof WorktreeError) return error;
+    throw error;
+  });
+  if (worktree instanceof WorktreeError) {
+    return { type: "error", code: "other", message: worktree.message, retryable: false };
+  }
+  try {
+    return await runInWorktree(sys, binary, turn, signal, emit, autonomy, worktree.path, worktree.branch);
+  } finally {
+    await worktree.release();
+  }
+}
+
+async function runInWorktree(sys: System, binary: string, turn: Turn, signal: AbortSignal,
+  emit: (event: EventContent) => void, autonomy: Autonomy, cwd: string, branch: string): Promise<Terminal> {
   const claudeSandbox = turn.job.provider === "claude" && autonomy === "edit" &&
     (sys.platform === "darwin" || sys.platform === "linux" &&
       (await Promise.all([executable(sys, ["bwrap"]), executable(sys, ["socat"])])).every(Boolean));
@@ -82,10 +100,10 @@ export async function runWorker(sys: System, binary: string, turn: Turn, signal:
   const gemini = turn.job.provider === "gemini" ? await geminiInvocation(sys, binary, turn) : undefined;
   const args = gemini?.args ?? workerArgs(turn, autonomy, claudeSandbox);
   const input = gemini?.input ?? (turn.kind === "continue" ? turn.answer!.text : turn.job.prompt);
-  const prompt = `${input}\n\n${instruction}\nCommit your work on a new branch opnav/${turn.job.id.slice(0, 8)} and do not push.\n`;
+  const prompt = `${input}\n\n${instruction}\nYour work is already on branch ${branch}. Commit there and do not push.\n`;
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
   const group = sys.platform !== "win32";
-  const proc = spawn(binary, args, { cwd: turn.job.checkoutPath, env: childEnv(sys.env), detached: group,
+  const proc = spawn(binary, args, { cwd, env: worktreeEnv(sys), detached: group,
     stdio: ["pipe", "pipe", "pipe"] });
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   function kill(force: boolean) {

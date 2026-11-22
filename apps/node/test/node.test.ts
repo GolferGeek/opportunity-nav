@@ -3,7 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -15,6 +15,7 @@ import { handoffReport } from "../src/handoff.ts";
 import { system } from "../src/system.ts";
 import { createUsageCollector } from "../src/usage/index.ts";
 import { terminal } from "../src/worker.ts";
+import { initRepo } from "./fixtures/git.ts";
 
 async function fixture(t: TestContext) {
   const home = await mkdtemp(join(tmpdir(), "opnav-test-"));
@@ -93,6 +94,9 @@ test("normalizes remotes and only treats a final valid fence as a question", () 
 
 test("node sends heartbeat, uploads usage, retries events, resumes and cancels workers", { timeout: 15_000 }, async t => {
   const home = await fixture(t);
+  const checkout = join(home, "project");
+  await mkdir(checkout);
+  initRepo(checkout);
   const bin = join(home, "bin");
   await mkdir(bin);
   await symlink(process.execPath, join(bin, "node"));
@@ -110,14 +114,14 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
   const turns: Turn[] = [
     { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
       job: { id: randomUUID(), projectId, title: "Question", prompt: "Ask me", provider: "claude",
-        model: "test-model", effort: "high", location: "cloud", checkoutPath: home } },
+        model: "test-model", effort: "high", location: "cloud", checkoutPath: checkout } },
     { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "continue",
       job: { id: randomUUID(), projectId, title: "Resume", prompt: "Ask me", provider: "codex",
-        model: "test-model", effort: "high", location: "cloud", checkoutPath: home, nodeId },
+        model: "test-model", effort: "high", location: "cloud", checkoutPath: checkout, nodeId },
       answer: { answerId: randomUUID(), questionId: randomUUID(), text: "Yes" }, providerSessionId: "session-from-claude" },
     { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
       job: { id: randomUUID(), projectId, title: "Cancel", prompt: "Wait", provider: "claude",
-        model: "test-model", effort: "high", location: "cloud", checkoutPath: home } },
+        model: "test-model", effort: "high", location: "cloud", checkoutPath: checkout } },
   ];
   turns.push({ turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
     job: { id: randomUUID(), projectId, title: "Local draft", prompt: "Draft a note", provider: "ollama",
@@ -198,7 +202,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
   const statuses: string[] = [];
   const service = startNode({
     serverUrl: `http://127.0.0.1:${address.port}`, token: "node-fixture", claimIntervalMs: 25,
-    externalIntervalMs: 25, system: { home, env: { PATH: bin, OPNAV_NODE_TOKEN: "node-fixture" } },
+    externalIntervalMs: 25, system: { home, env: { PATH: [bin, process.env.PATH].join(delimiter), OPNAV_NODE_TOKEN: "node-fixture" } },
     onStatus: message => statuses.push(message),
     fetch: async (url, init) => {
       if (String(url).startsWith("https://api.anthropic.com")) return new Response(await usageFixture());

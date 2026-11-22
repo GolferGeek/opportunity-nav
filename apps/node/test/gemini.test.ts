@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { Turn } from "@opnav/shared";
 import { system } from "../src/system.ts";
 import { runWorker } from "../src/worker.ts";
+import { initRepo } from "./fixtures/git.ts";
 import type { EventContent } from "../src/worker.ts";
 
 for (const resume of [true, false]) {
   test(`Gemini CLI ${resume ? "resumes a streamed session" : "includes the previous reply in a fresh turn"}`, async t => {
     const home = await mkdtemp(join(tmpdir(), "opnav-gemini-test-"));
     t.after(() => rm(home, { recursive: true, force: true }));
+    const checkout = join(home, "project");
+    await mkdir(checkout);
+    initRepo(checkout);
     const binary = join(home, "gemini");
     const id = randomUUID();
     await writeFile(binary, `#!/usr/bin/env node
@@ -25,7 +29,11 @@ if (args.includes("--help")) {
 assert.ok(args.includes(${JSON.stringify(resume ? "stream-json" : "json")}));
 let prompt = "";
 for await (const chunk of process.stdin) prompt += chunk;
+const marker = "first-turn.txt";
+const { existsSync, writeFileSync } = await import("node:fs");
 const followup = prompt.startsWith("Yes") || prompt.includes("User's answer:");
+assert.equal(existsSync(marker), followup);
+if (!followup) writeFileSync(marker, "kept between turns");
 if (followup && ${resume}) assert.equal(args[args.indexOf("--resume") + 1], ${JSON.stringify(id)});
 if (followup && !${resume}) assert.match(prompt, /Previous reply:[\\s\\S]*Here is my first reply/);
 const reply = followup ? "Finished." : ${JSON.stringify('Here is my first reply.\n```opnav-needs-input\n{"question":"Continue?"}\n```')};
@@ -41,7 +49,7 @@ if (${resume}) {
     const turn: Turn = {
       turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
       job: { id: randomUUID(), projectId: randomUUID(), title: "Gemini", provider: "gemini",
-        location: "cloud", checkoutPath: home, prompt: "Draft a note." },
+        location: "cloud", checkoutPath: checkout, prompt: "Draft a note." },
     };
     const events: EventContent[] = [];
     const run = (input: Turn) => runWorker(sys, binary, input, new AbortController().signal, event => events.push(event));
