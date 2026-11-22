@@ -63,6 +63,13 @@ function open(c: Config | null) {
   }
   if (c) void win.loadURL(c.serverUrl + "/");
   else void win.loadFile(path.join(__dirname, "setup.html"));
+  // OPNAV_SMOKE=1: load, report what rendered, quit. Used by checks; never on by default.
+  if (process.env.OPNAV_SMOKE === "1")
+    win.webContents.once("did-finish-load", () => setTimeout(async () => {
+      const text = await win!.webContents.executeJavaScript("document.body.innerText.slice(0, 400)");
+      console.log(`SMOKE title=${win!.getTitle()} helper=${helperStatus}\n${text}`);
+      app.exit(0);
+    }, Number(process.env.OPNAV_SMOKE_WAIT_MS ?? 2500)));
 }
 
 async function runHelper(c: Config) {
@@ -101,7 +108,9 @@ ipcMain.on("opnav:context", (e) => {
  * (https://server/#signin=<token>). We check it, then make this machine's
  * own helper token with it, so there's nothing else to copy.
  */
-ipcMain.handle("opnav:setup", async (_e, input: { link: string; runHelper: boolean }) => {
+ipcMain.handle("opnav:setup", (_e, input: { link: string; runHelper: boolean }) => setup(input));
+
+async function setup(input: { link: string; runHelper: boolean }) {
   const m = /^(https?:\/\/[^#\s]+?)\/?#signin=([\w-]+)$/.exec(input.link.trim());
   if (!m) throw new Error("Paste the whole sign-in link, like http://gg-macstudio:4317/#signin=…");
   const serverUrl = m[1]!.replace(/\/+$/, "");
@@ -127,7 +136,7 @@ ipcMain.handle("opnav:setup", async (_e, input: { link: string; runHelper: boole
   await runHelper(c);
   open(c);
   return { name: me.name };
-});
+}
 
 function menu() {
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -164,8 +173,12 @@ app.whenReady().then(async () => {
   menu();
   const raw = load();
   const c = raw && raw.serverUrl && raw.uiToken ? raw : null;
-  open(c);
-  if (c) await runHelper(c);
+  if (process.env.OPNAV_SMOKE_LINK) {
+    await setup({ link: process.env.OPNAV_SMOKE_LINK, runHelper: true });
+  } else {
+    open(c);
+    if (c) await runHelper(c);
+  }
   try {
     const icon = nativeImage.createFromDataURL(
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAQUlEQVR4nGNgGAWjgP6A8T8DAwMDg/9/BgYGBmL8Z2BgYGBg+M/AwMDw/z8DAwPDfwYGBoZRMApGwSgYBaNgFAwAAEUlBf7pJ8Q3AAAAAElFTkSuQmCC",

@@ -2,8 +2,13 @@
   "name": "opportunity-nav",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
-  "engines": { "node": ">=24" },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "check": "npm run typecheck && npm test",
     "typecheck": "tsc -b",
@@ -12,5 +17,10 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
+  },
+  "allowScripts": {
+    "electron@38.8.6": true,
+    "esbuild@0.28.2": true,
+    "esbuild@0.25.12": true
   }
 }
