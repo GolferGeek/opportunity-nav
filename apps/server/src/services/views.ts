@@ -1,5 +1,5 @@
 import type { Db } from "../db.ts";
-import { listTree, pathOf, type TreeNode } from "./tree.ts";
+import { byPriority, listTree, pathOf, type TreeNode } from "./tree.ts";
 
 /**
  * The two panes. Both are grouped by project in the person's tree order, and
@@ -140,6 +140,7 @@ export async function dashboard(db: Db, userId: string) {
   const byId = new Map(tree.map((n) => [n.id, n]));
   const projects = tree
     .filter((n) => n.kind === "project")
+    .sort(byPriority) // high first; within a priority, tree order
     .map((p) => {
       const st = s.get(p.id);
       const active = Number(st?.active ?? 0);
@@ -148,6 +149,7 @@ export async function dashboard(db: Db, userId: string) {
       return {
         id: p.id,
         path: pathOf(byId, p.id),
+        priority: p.priority,
         line: p.statusLine ?? autoLine(active, questions, roadblocks, st?.last_done ?? null),
         active, questions, roadblocks,
       };

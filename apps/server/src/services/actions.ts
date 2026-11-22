@@ -46,7 +46,7 @@ export const actions = {
     run: async (sql: Sql, userId: string) => {
       const tree = await listTree(sql, userId);
       const byId = new Map(tree.map((n) => [n.id, n]));
-      return tree.map((n) => ({ id: n.id, kind: n.kind, path: pathOf(byId, n.id).join(" / "), favorite: n.favorite, repo: n.repoRemote, status: n.statusLine }));
+      return tree.map((n) => ({ id: n.id, kind: n.kind, path: pathOf(byId, n.id).join(" / "), favorite: n.favorite, priority: n.priority, repo: n.repoRemote, status: n.statusLine }));
     },
   },
   add_item: {
@@ -68,7 +68,7 @@ export const actions = {
     },
   },
   update_item: {
-    description: "Change an item: rename, move, favorite, set its repo, defaults, or one-line status.",
+    description: "Change an item: rename, move, favorite, set its priority (high, medium, low), its repo, defaults, or one-line status.",
     input: z.object({ item: Ref, changes: TreeNodePatch.omit({ parentId: true }).extend({ moveUnder: Ref.nullable().optional() }) }),
     run: async (sql: Sql, userId: string, i: any) => {
       const node = await resolveRef(sql, userId, i.item);

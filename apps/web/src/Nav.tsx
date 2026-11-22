@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type TreeNode } from "./api.ts";
 
 interface Props {
@@ -27,7 +27,32 @@ export function Nav({ tree, selected, onSelect, onChanged, onError }: Props) {
     for (const n of tree) m.set(n.parentId, [...(m.get(n.parentId) ?? []), n]);
     return m;
   }, [tree]);
-  const favorites = tree.filter((n) => n.favorite).sort((a, b) => (a.favoritePosition ?? 0) - (b.favoritePosition ?? 0));
+  const savedFavorites = useMemo(() => tree.filter((n) => n.favorite).sort((a, b) => (a.favoritePosition ?? 0) - (b.favoritePosition ?? 0)), [tree]);
+  // While a drag is saving, show the new order so the row doesn't jump back.
+  const [draftOrder, setDraftOrder] = useState<string[] | null>(null);
+  useEffect(() => setDraftOrder(null), [tree]);
+  const favorites = draftOrder
+    ? draftOrder.map((id) => savedFavorites.find((f) => f.id === id)).filter((f): f is TreeNode => !!f)
+    : savedFavorites;
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropAt, setDropAt] = useState<{ id: string; after: boolean } | null>(null);
+  const dropFavorite = () => {
+    const from = dragging;
+    const at = dropAt;
+    setDragging(null);
+    setDropAt(null);
+    if (!from || !at || at.id === from) return;
+    const rest = favorites.filter((f) => f.id !== from);
+    const i = rest.findIndex((f) => f.id === at.id) + (at.after ? 1 : 0);
+    const order = [...rest.slice(0, i).map((f) => f.id), from, ...rest.slice(i).map((f) => f.id)];
+    if (order.join() === favorites.map((f) => f.id).join()) return;
+    setDraftOrder(order);
+    // The draft clears when the reloaded tree arrives, or at once if saving fails.
+    api("PATCH", `/api/tree/${from}`, { favoriteBeforeId: rest[i]?.id ?? null }).then(onChanged, (e: Error) => {
+      setDraftOrder(null);
+      onError(e.message);
+    });
+  };
 
   const toggle = (id: string) => {
     const next = new Set(collapsed);
@@ -45,12 +70,12 @@ export function Nav({ tree, selected, onSelect, onChanged, onError }: Props) {
       onError((e as Error).message);
     }
   };
+  // Siblings sort by priority first, so ↑/↓ move within the same priority.
   const move = (n: TreeNode, dir: -1 | 1) => {
-    const sibs = kids.get(n.parentId) ?? [];
-    const i = sibs.findIndex((s) => s.id === n.id);
-    const target = dir === -1 ? sibs[i - 1] : sibs[i + 2];
-    if (dir === -1 && !target) return;
-    void act(() => api("PATCH", `/api/tree/${n.id}`, { beforeId: target?.id ?? null }));
+    const same = (kids.get(n.parentId) ?? []).filter((s) => s.priority === n.priority);
+    const i = same.findIndex((s) => s.id === n.id);
+    if (dir === -1 && same[i - 1]) void act(() => api("PATCH", `/api/tree/${n.id}`, { beforeId: same[i - 1]!.id }));
+    if (dir === 1 && same[i + 1]) void act(() => api("PATCH", `/api/tree/${same[i + 1]!.id}`, { beforeId: n.id }));
   };
 
   const row = (n: TreeNode, depth: number): React.ReactNode => {
@@ -101,9 +126,37 @@ export function Nav({ tree, selected, onSelect, onChanged, onError }: Props) {
           <h3>Favorites</h3>
           <ul>
             {favorites.map((f) => (
-              <li key={f.id}>
-                <div className={`row ${selected === f.id ? "sel" : ""}`} style={{ paddingLeft: 8 }}>
-                  <button className="title" onClick={() => onSelect(f.id)}>★ {f.title}</button>
+              <li key={f.id}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", f.id); // Firefox won't start a drag without data
+                  setDragging(f.id);
+                }}
+                onDragOver={(e) => {
+                  if (!dragging) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  const r = e.currentTarget.getBoundingClientRect();
+                  const after = e.clientY > r.top + r.height / 2;
+                  if (dropAt?.id !== f.id || dropAt.after !== after) setDropAt({ id: f.id, after });
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  dropFavorite();
+                }}
+                onDragEnd={() => {
+                  setDragging(null);
+                  setDropAt(null);
+                }}
+                className={`fav ${dragging === f.id ? "dragging" : ""} ${dropAt?.id === f.id && dragging !== f.id ? (dropAt.after ? "drop-after" : "drop-before") : ""}`}>
+                <div className={`row ${selected === f.id ? "sel" : ""}`} style={{ paddingLeft: 8 }} title="Drag to reorder">
+                  {/* Not a <button>: Firefox won't start a drag from inside one. */}
+                  <span className="title" role="button" tabIndex={0} onClick={() => onSelect(f.id)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(f.id); } }}>
+                    ★ {f.title}
+                  </span>
+                  <span className="grip" aria-hidden>⋮⋮</span>
                 </div>
               </li>
             ))}

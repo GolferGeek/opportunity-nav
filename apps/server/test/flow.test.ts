@@ -68,6 +68,39 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     projectId = p.id;
   });
 
+  test("priority sorts projects; favorites reorder by drag", async () => {
+    const area = await ok(ui, "POST", "/api/tree", { kind: "area", title: "Priority area" });
+    const a = await ok(ui, "POST", "/api/tree", { kind: "project", title: "PA", parentId: area.id });
+    const b = await ok(ui, "POST", "/api/tree", { kind: "project", title: "PB", parentId: area.id });
+    const c = await ok(ui, "POST", "/api/tree", { kind: "project", title: "PC", parentId: area.id });
+    assert.equal(a.priority, "medium", "default");
+    await ok(ui, "PATCH", `/api/tree/${c.id}`, { priority: "high" });
+    await ok(ui, "PATCH", `/api/tree/${a.id}`, { priority: "low" });
+    const bad = await call(ui, "PATCH", `/api/tree/${a.id}`, { priority: "urgent" });
+    assert.equal(bad.status, 400);
+    let tree = await ok(ui, "GET", "/api/tree");
+    assert.deepEqual(tree.filter((n: any) => n.parentId === area.id).map((n: any) => n.title), ["PC", "PB", "PA"]);
+    const dash = await ok(ui, "GET", "/api/dashboard");
+    const names = dash.projects.map((p: any) => p.path.at(-1));
+    assert.equal(names[0], "PC", "high first on the dashboard");
+    assert.equal(names.at(-1), "PA", "low last");
+
+    const favs = async () => (await ok(ui, "GET", "/api/tree")).filter((n: any) => n.favorite)
+      .sort((x: any, y: any) => x.favoritePosition - y.favoritePosition).map((n: any) => n.title);
+    for (const n of [a, b, c]) await ok(ui, "PATCH", `/api/tree/${n.id}`, { favorite: true });
+    const before = (await favs()).filter((t: string) => !["PA", "PB", "PC"].includes(t));
+    assert.deepEqual((await favs()).slice(-3), ["PA", "PB", "PC"]);
+    await ok(ui, "PATCH", `/api/tree/${c.id}`, { favoriteBeforeId: a.id }); // drag PC above PA
+    assert.deepEqual((await favs()).slice(-3), ["PC", "PA", "PB"]);
+    await ok(ui, "PATCH", `/api/tree/${c.id}`, { favoriteBeforeId: null }); // drag PC to the bottom
+    assert.deepEqual((await favs()).slice(-3), ["PA", "PB", "PC"]);
+    assert.deepEqual((await favs()).slice(0, -3), before, "other favorites keep their order");
+    const notFav = await call(ui, "PATCH", `/api/tree/${area.id}`, { favoriteBeforeId: a.id });
+    assert.equal(notFav.status, 400, "only a favorite can be reordered");
+
+    for (const n of [a, b, c, area]) await ok(ui, "PATCH", `/api/tree/${n.id}`, { archived: true, favorite: false });
+  });
+
   test("roles are enforced", async () => {
     assert.equal((await call(node, "GET", "/api/tree")).status, 403);
     assert.equal((await call(ui, "POST", "/api/node/heartbeat", hb("x"))).status, 403);

@@ -14,7 +14,7 @@ export interface Dash {
     monthlyCostUsd: number | null;
     windows: { id: string; label: string; unit: string; used: number; limit: number | null; percent: number | null; resetsAt: string | null; hasReset: boolean; kind: string }[];
   }[];
-  projects: { id: string; path: string[]; line: string; active: number; questions: number; roadblocks: number }[];
+  projects: { id: string; path: string[]; priority: string; line: string; active: number; questions: number; roadblocks: number }[];
 }
 
 const STATUS_TEXT: Record<string, string> = {

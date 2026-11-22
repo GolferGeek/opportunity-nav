@@ -86,12 +86,20 @@ export interface TreeNode {
   position: number;
   favorite: boolean;
   favoritePosition: number | null;
+  priority: Priority;
   repoRemote: string | null;
   defaultProvider: string | null;
   defaultModel: string | null;
   defaultLocation: "local" | "cloud" | null;
   statusLine: string | null;
 }
+
+export type Priority = "high" | "medium" | "low";
+export const PRIORITIES: { id: Priority; name: string }[] = [
+  { id: "high", name: "High" },
+  { id: "medium", name: "Medium" },
+  { id: "low", name: "Low" },
+];
 
 export const PROVIDERS: { id: string; name: string }[] = [
   { id: "claude", name: "Claude Code" },

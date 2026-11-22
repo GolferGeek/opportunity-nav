@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ago, api, PROVIDERS, providerName, type TreeNode } from "./api.ts";
+import { ago, api, PRIORITIES, PROVIDERS, providerName, type Priority, type TreeNode } from "./api.ts";
 
 export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: {
   node: TreeNode;
@@ -30,6 +30,14 @@ export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: 
         <h1>{node.title}</h1>
         <span className="kind muted">{node.kind}</span>
         <span className="spacer" />
+        {node.kind === "project" && (
+          <label className="priority muted" title="Higher-priority projects sort first">
+            Priority
+            <select value={node.priority} onChange={(e) => void patch({ priority: e.target.value as Priority })}>
+              {PRIORITIES.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+        )}
         {node.kind !== "area" && <button className="primary" onClick={() => setStarting(!starting)}>Start a job</button>}
         <button onClick={() => setEditing(!editing)}>{editing ? "Done" : "Edit"}</button>
       </div>

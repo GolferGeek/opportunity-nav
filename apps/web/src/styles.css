@@ -209,3 +209,15 @@ main { overflow-y: auto; padding: 14px 20px 60px; min-width: 0; }
 button.on-toggle { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .row-head { display: flex; align-items: center; gap: 8px; }
 .check-now { font-weight: normal; display: inline-flex; align-items: center; gap: 4px; }
+
+/* Favorites: drag to reorder. */
+.nav li.fav { cursor: grab; }
+.nav li.fav .title { cursor: pointer; }
+.nav li.fav.dragging { opacity: 0.4; }
+.nav li.fav.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.nav li.fav.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.nav li.fav .grip { color: var(--muted); font-size: 11px; padding: 0 6px; visibility: hidden; user-select: none; }
+.nav li.fav .row:hover .grip { visibility: visible; }
+
+.title-row .priority { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.title-row .priority select { padding: 2px 4px; font-size: 12px; }
