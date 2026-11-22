@@ -62,6 +62,14 @@ How much a job can do on a machine is that machine's choice (`OPNAV_WORKER_AUTON
 - `edit` (the default): edit files in the job worktree and run commands in a sandbox.
 - `full`: no sandbox and no prompts.
 
+## Running jobs in Cloudroom
+
+A job can run on your own machine (the default) or in Cloudroom's cloud sandbox. A machine with the Cloudroom app installed and signed in offers the cloud option automatically.
+
+- It runs Claude Code, Codex or Antigravity on your own subscription.
+- It starts from the repo's default branch on GitHub, so unpushed local changes aren't there.
+- It pushes its work to a branch named `opnav/<first 8 characters of the job ID>` for you to review. It never opens a pull request or touches the default branch.
+
 ## Developing
 
 ```sh
