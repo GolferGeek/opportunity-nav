@@ -1,1 +1,1 @@
-{ "files": [], "references": [{ "path": "packages/shared" }] }
+{ "files": [], "references": [{ "path": "packages/shared" }, { "path": "apps/node" }] }
