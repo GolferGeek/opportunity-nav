@@ -95,12 +95,25 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
   const [provider, setProvider] = useState(node.defaultProvider ?? "claude");
   const [model, setModel] = useState(node.defaultModel ?? "");
   const [location, setLocation] = useState(node.defaultLocation ?? "");
+  const [runner, setRunner] = useState<"direct" | "cloudroom">("direct");
   const [busy, setBusy] = useState(false);
+  // Machines that can hand jobs to Cloudroom, and which agents they can run there.
+  const [cloudroom, setCloudroom] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    void api<any[]>("GET", "/api/machines").then((ms) => {
+      if (live) setCloudroom([...new Set(ms.filter((m) => m.online && m.cloudroom).flatMap((m) => m.cloudroom.providers as string[]))]);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  useEffect(() => { if (!cloudroom.includes(provider)) setRunner("direct"); }, [provider, cloudroom]);
+  const inCloudroom = runner === "cloudroom";
   const go = async () => {
     if (!prompt.trim()) return;
     setBusy(true);
     try {
-      const j = await api("POST", "/api/jobs", { nodeId: node.id, prompt, provider, model: model || undefined, location: location || undefined });
+      const j = await api("POST", "/api/jobs", { nodeId: node.id, prompt, provider, model: model || undefined,
+        location: inCloudroom ? "cloud" : location || undefined, runner });
       onStarted(j.id);
     } catch (e) {
       onError((e as Error).message);
@@ -117,11 +130,20 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
           {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model (default)" aria-label="Model" />
-        <select value={location} onChange={(e) => setLocation(e.target.value)} aria-label="Where it runs">
-          <option value="">Default</option>
-          <option value="cloud">Cloud</option>
-          <option value="local">Local</option>
-        </select>
+        {!inCloudroom && (
+          <select value={location} onChange={(e) => setLocation(e.target.value)} aria-label="Model location">
+            <option value="">Default</option>
+            <option value="cloud">Cloud model</option>
+            <option value="local">Local model</option>
+          </select>
+        )}
+        {cloudroom.length > 0 && (
+          <select value={runner} onChange={(e) => setRunner(e.target.value as "direct" | "cloudroom")} aria-label="Where it runs"
+            title="Cloudroom runs it in its own cloud sandbox, starting from the repo on GitHub, and pushes the work to a branch.">
+            <option value="direct">On my machine</option>
+            <option value="cloudroom" disabled={!cloudroom.includes(provider)}>In Cloudroom's cloud{cloudroom.includes(provider) ? "" : " (not for this agent)"}</option>
+          </select>
+        )}
         <span className="spacer" />
         <button type="submit" className="primary" disabled={busy || !prompt.trim()}>Start</button>
       </div>

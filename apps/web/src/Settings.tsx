@@ -31,6 +31,7 @@ export function Settings({ onClose, onError }: { onClose: () => void; onError: (
             <div className="muted">
               {m.providers.filter((p: any) => p.signedIn).map((p: any) => providerName(p.provider)).join(", ") || "No agents signed in"}
               {m.checkouts.length ? ` · ${m.checkouts.length} repos` : ""}{m.handoff ? " · handoff watcher" : ""}
+              {m.cloudroom ? ` · Cloudroom (${m.cloudroom.providers.map((p: string) => providerName(p)).join(", ") || "no agents connected"})` : ""}
               {m.autonomy === "full" ? " · workers run without a sandbox" : ""}
             </div>
           </li>

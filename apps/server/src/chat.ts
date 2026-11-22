@@ -45,6 +45,7 @@ function systemPrompt(cfg: ChatConfig, scope: { id: string; path: string[] } | n
     `When they want this app itself to look or work differently, it's the project whose repo is ${cfg.appRepo} (find it with get_tree). Talk it through until the change is clear, then start a job on that project (provider claude) with a precise, self-contained description: what to change, where in the UI, and how they'll know it's right. Tell them it will land on its own branch for them to review before it ships. Don't claim it's done until the job succeeds.`,
     "Grok Bot is Matt's CEO agent and knows a lot about his work. When something is better asked of it, or Matt says to ask it, use message_grok_bot with a clear, self-contained request. Its answer arrives later as changes in the tree, not in this chat.",
     "For real work on any other project (code, writing, research), start a job there rather than doing it yourself.",
+    "A job can also run in Cloudroom's cloud (start_job with runner \"cloudroom\"; Claude, Codex or Antigravity). Use it when they ask for Cloudroom or the cloud sandbox. It starts from the repo's default branch on GitHub and pushes to a branch named opnav/<first 8 of the job id>.",
     "Write plainly and briefly. One thought per line. No headers. Say what you did after you do it.",
   ].join("\n");
 }

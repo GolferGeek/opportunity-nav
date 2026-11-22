@@ -19,10 +19,16 @@ export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onCl
       {!job ? <p className="muted">Loading…</p> : (
         <>
           <div className="facts muted">
-            <span className={`dot ${job.status}`} /> {job.status} · {providerName(job.provider)}{job.model ? ` · ${job.model}` : ""} · {job.location}
+            <span className={`dot ${job.status}`} /> {job.status} · {providerName(job.provider)}{job.model ? ` · ${job.model}` : ""} · {job.cloudroom ? "in Cloudroom's cloud" : job.location}
             {job.tokens && (job.tokens.input || job.tokens.output) ? ` · ${(job.tokens.input + job.tokens.output).toLocaleString()} tokens` : ""}
             {job.costUsd ? ` · $${job.costUsd.toFixed(2)}` : ""} · started by {job.createdBy} {ago(job.createdAt)}
           </div>
+          {job.cloudroom && (
+            <div className="muted small">
+              Runs in a Cloudroom sandbox from the repo's default branch on GitHub. Its work is pushed to <code>{job.cloudroom.branch}</code>.
+              {job.cloudroom.thread ? <> Open thread <code>{job.cloudroom.thread}</code> in the Cloudroom app to see everything.</> : ""}
+            </div>
+          )}
           {job.summary && (<><h4>{job.status === "failed" ? "What went wrong" : "Result"}</h4><pre className="prompt">{job.summary}</pre></>)}
           {job.questions.length > 0 && (
             <>
