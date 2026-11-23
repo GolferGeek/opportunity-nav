@@ -19,7 +19,7 @@ const now = () => new Date().toISOString();
 describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
   let sql: Sql;
   let app: FastifyInstance;
-  let ui: string, node: string, agent: string, node2: string;
+  let ui: string, node: string, agent: string, node2: string, userId: string;
 
   const call = async (token: string, method: string, path: string, body?: unknown) => {
     const r = await app.inject({ method: method as any, url: path, headers: { authorization: `Bearer ${token}` }, payload: body as any });
@@ -36,6 +36,7 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     await sql.unsafe("drop schema public cascade; create schema public;");
     await migrate(sql);
     const [u] = await sql`insert into users (name) values ('Test') returning id`;
+    userId = u!.id;
     ui = (await createToken(sql, u!.id, "ui", "test ui")).token;
     node = (await createToken(sql, u!.id, "node", "laptop")).token;
     node2 = (await createToken(sql, u!.id, "node", "studio")).token;
@@ -524,6 +525,56 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal(missing.error, "No reviewer can run right now. Antigravity: no machine that runs it has this repo. Codex: no machine that runs it has this repo.");
 
     await sql`update subscriptions set hidden = true where provider in ('agy', 'codex')`;
+  });
+
+  test("capacity: two claims at once never fill a machine past its capacity; a machine can stop taking new jobs", async () => {
+    const busy = (await createToken(sql, userId, "node", "busy box")).token;
+    const remote = "https://github.com/example/parallel";
+    const beat = (capacity?: number) => ok(busy, "POST", "/api/node/heartbeat", {
+      ...hb("busybox"), checkouts: [{ path: "/home/busybox/parallel", remote }], ...(capacity ? { capacity } : {}),
+    });
+    await beat();
+    const [m] = (await ok(ui, "GET", "/api/machines")).filter((x: any) => x.name === "busybox");
+    assert.equal(m.capacity, 1, "a helper that doesn't say runs one job");
+    assert.equal(m.takingJobs, true);
+    await beat(3);
+    const project = await ok(ui, "POST", "/api/tree", { kind: "project", title: "Parallel", repoRemote: remote, defaultProvider: "claude" });
+    const jobs = [];
+    for (let i = 0; i < 6; i++) jobs.push(await ok(ui, "POST", "/api/jobs", { nodeId: project.id, prompt: `Job ${i}` }));
+    const claimNow = () => ok(busy, "POST", "/api/node/jobs/claim", { providers: ["claude"], max: 3 });
+    // Claims at the same moment, each asking for the whole capacity.
+    const claims = await Promise.all([claimNow(), claimNow(), claimNow(), claimNow()]);
+    const turns = claims.flatMap((c: any) => c.turns);
+    const got = turns.map((t: any) => t.job.id);
+    assert.equal(got.length, 3, `got ${claims.map((c: any) => c.turns.length).join(" + ")}`);
+    assert.equal(new Set(got).size, 3);
+    assert.equal((await claimNow()).turns.length, 0, "full");
+    const [row] = (await ok(ui, "GET", "/api/machines")).filter((x: any) => x.name === "busybox");
+    assert.equal(row.running, 3);
+
+    // One finishes: one slot opens, however much it asks for.
+    const done = turns[0];
+    await ok(busy, "POST", `/api/node/jobs/${done.job.id}/events`, { leaseId: done.leaseId, events: [{ seq: 0, at: now(), type: "result", summary: "Done" }] });
+    const next = await claimNow();
+    assert.equal(next.turns.length, 1);
+
+    // A lease that ran out doesn't hold a slot.
+    const stale = turns[1];
+    await sql`update turns set lease_expires_at = now() - interval '1 second' where lease_id = ${stale.leaseId}`;
+    assert.equal((await claimNow()).turns.length, 1, "the expired lease's slot is free");
+
+    // Stop new jobs: it keeps what it has and claims nothing until it's turned back on.
+    await ok(ui, "PATCH", `/api/machines/${m.id}`, { takingJobs: false });
+    await sql`update turns set status = 'done', lease_id = null where node_id = ${m.id} and status = 'running'`;
+    assert.equal((await ok(ui, "GET", "/api/machines")).find((x: any) => x.id === m.id).takingJobs, false);
+    assert.equal((await claimNow()).turns.length, 0, "not taking new jobs");
+    await beat(3);
+    assert.equal((await ok(ui, "GET", "/api/machines")).find((x: any) => x.id === m.id).takingJobs, false, "a heartbeat doesn't turn it back on");
+    await ok(ui, "PATCH", `/api/machines/${m.id}`, { takingJobs: true });
+    assert.equal((await claimNow()).turns.length, 1, "the one job left");
+    assert.equal((await call(ui, "PATCH", `/api/machines/${jobs[0].id}`, { takingJobs: false })).status, 404);
+    await sql`update turns set status = 'done', lease_id = null where node_id = ${m.id} and status = 'running'`;
+    await sql`update jobs set status = 'cancelled' where project_id = ${project.id} and status in ('queued', 'running')`;
   });
 
   test("MCP: lists the same tools", async () => {

@@ -42,10 +42,20 @@ export async function listMachines(db: Db, userId: string) {
     /** Jobs it runs at once, and how many it's running now. */
     capacity: Number(r.capacity ?? 1),
     running: Number(r.running ?? 0),
+    /** Off: it finishes what it has and claims nothing new. */
+    takingJobs: r.taking_jobs !== false,
     lastSeenAt: r.last_seen_at,
     online: !r.revoked_at && Date.now() - new Date(r.last_seen_at).getTime() < 120_000,
     revoked: !!r.revoked_at,
   }));
+}
+
+/** Turn new jobs on or off for a machine, by id or name. Returns the machines it changed. */
+export async function setTakingJobs(db: Db, userId: string, machine: { id?: string; name?: string }, takingJobs: boolean) {
+  const rows = await db<{ id: string; name: string }[]>`update nodes set taking_jobs = ${takingJobs}
+    where user_id = ${userId} and ${machine.id ? db`id = ${machine.id}` : db`lower(name) = lower(${machine.name ?? ""})`}
+    returning id, name`;
+  return rows;
 }
 
 /** A fresh good reading from another machine beats a failure from this one for this long. */

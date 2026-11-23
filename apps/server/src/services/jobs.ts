@@ -120,17 +120,26 @@ export function jobRow(r: any) {
   };
 }
 
-/** Hand out queued turns this machine can run: right provider, and a checkout of the project's repo. */
+/**
+ * Hand out queued turns this machine can run: right provider, and a checkout of the project's repo.
+ * Never more than the machine has free: its capacity minus the turns it holds live leases on.
+ * The machine's row is locked for the claim, so two claims at once can't both fill the same slots.
+ */
 export async function claim(sql: Sql, userId: string, machineId: string, req: ClaimRequest): Promise<Turn[]> {
-  const [machine] = await sql<{ checkouts: { path: string; remote?: string }[]; tools: string[] }[]>`
-    select checkouts, tools from nodes where id = ${machineId} and user_id = ${userId}`;
-  if (!machine) throw new HttpError(401, "Unknown machine; send a heartbeat first.");
-  const checkoutFor = new Map<string, string>();
-  for (const c of machine.checkouts ?? []) if (c.remote && !checkoutFor.has(normaliseRemote(c.remote))) checkoutFor.set(normaliseRemote(c.remote), c.path);
-  const remotes = [...checkoutFor.keys()];
-  if (remotes.length === 0) return [];
-
   return sql.begin(async (tx) => {
+    const [machine] = await tx<{ checkouts: { path: string; remote?: string }[]; tools: string[]; capacity: number; taking_jobs: boolean }[]>`
+      select checkouts, tools, capacity, taking_jobs from nodes where id = ${machineId} and user_id = ${userId} for update`;
+    if (!machine) throw new HttpError(401, "Unknown machine; send a heartbeat first.");
+    if (!machine.taking_jobs) return [];
+    const [held] = await tx<{ running: number }[]>`select count(*)::int as running from turns
+      where node_id = ${machineId} and status = 'running' and lease_expires_at > now()`;
+    const free = Math.min(req.max, Number(machine.capacity ?? 1) - Number(held?.running ?? 0));
+    if (free <= 0) return [];
+    const checkoutFor = new Map<string, string>();
+    for (const c of machine.checkouts ?? []) if (c.remote && !checkoutFor.has(normaliseRemote(c.remote))) checkoutFor.set(normaliseRemote(c.remote), c.path);
+    const remotes = [...checkoutFor.keys()];
+    if (remotes.length === 0) return [];
+
     const rows = await tx`
       select t.id as turn_id, t.kind, t.answer_id, j.*, p.repo_remote
       from turns t join jobs j on j.id = t.job_id join tree_nodes p on p.id = j.project_id
@@ -141,7 +150,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
         and (j.node_id is null or j.node_id = ${machineId})
         and (j.runner = 'cloudroom' or j.needs <@ ${tx.json(machine.tools ?? [])}::jsonb)
       order by t.created_at
-      limit ${req.max}
+      limit ${free}
       for update of t, j skip locked`;
     const turns: Turn[] = [];
     for (const r of rows) {

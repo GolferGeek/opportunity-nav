@@ -17,6 +17,14 @@ export function Settings({ onClose, onError }: { onClose: () => void; onError: (
       onError((e as Error).message);
     }
   };
+  const toggle = async (m: { id: string; takingJobs?: boolean }) => {
+    try {
+      await api("PATCH", `/api/machines/${m.id}`, { takingJobs: m.takingJobs === false });
+      void machines.reload();
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
   const server = (window as any).opnavDesktop?.serverUrl ?? location.origin;
   return (
     <aside className="drawer wide" role="dialog" aria-label="Settings">
@@ -34,6 +42,11 @@ export function Settings({ onClose, onError }: { onClose: () => void; onError: (
               {m.cloudroom ? ` · Cloudroom (${m.cloudroom.providers.map((p: string) => providerName(p)).join(", ") || "no agents connected"})` : ""}
               {m.autonomy === "full" ? " · workers run without a sandbox" : ""}
               {m.tools?.length ? ` · has ${needsText(m.tools)}` : ""}
+            </div>
+            <div className="muted">
+              {m.running ? `Running ${m.running} of ${m.capacity} jobs` : `Runs up to ${m.capacity} ${m.capacity === 1 ? "job" : "jobs"} at once`}
+              {m.takingJobs === false ? " · not taking new jobs" : ""}
+              {" "}<button className="link" onClick={() => toggle(m)}>{m.takingJobs === false ? "Take new jobs" : "Stop new jobs"}</button>
             </div>
           </li>
         ))}

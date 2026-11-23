@@ -4,17 +4,20 @@
  *   opnav-admin token --role node --label "Mac Studio" [--user <id>]
  *   opnav-admin signin [--user <id>]        a new UI sign-in link
  *   opnav-admin merge-usage --from <id> --into <id>   fold a duplicate subscription card into another
+ *   opnav-admin machines                    each machine: capacity, jobs running, taking new jobs, helper
+ *   opnav-admin jobs-off --machine <name>   stop a machine taking new jobs; it finishes what it has
+ *   opnav-admin jobs-on --machine <name>    let it take new jobs again
  * Tokens are printed once, to this terminal only.
  */
 import { parseArgs } from "node:util";
 import { connect, migrate } from "./db.ts";
 import { createToken, type Role } from "./auth.ts";
-import { mergeSubscriptions } from "./services/machines.ts";
+import { listMachines, mergeSubscriptions, setTakingJobs } from "./services/machines.ts";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: { name: { type: "string" }, role: { type: "string" }, label: { type: "string" }, user: { type: "string" },
-    from: { type: "string" }, into: { type: "string" } },
+    from: { type: "string" }, into: { type: "string" }, machine: { type: "string" } },
 });
 const sql = connect(process.env.DATABASE_URL ?? "postgres://localhost:5432/opportunity_nav");
 await migrate(sql);
@@ -55,8 +58,23 @@ try {
       console.log("Merged. The old card is hidden; its reports now go to the other card.");
       break;
     }
+    case "machines":
+      for (const m of await listMachines(sql, await userId())) {
+        if (m.revoked) continue;
+        console.log(`${m.name}\t${m.online ? "online" : "offline"}\tcapacity ${m.capacity}\trunning ${m.running}\t${m.takingJobs ? "taking jobs" : "not taking new jobs"}\thelper ${m.helperVersion}`);
+      }
+      break;
+    case "jobs-on":
+    case "jobs-off": {
+      if (!values.machine) throw new Error("Pass --machine <name>.");
+      const on = positionals[0] === "jobs-on";
+      const changed = await setTakingJobs(sql, await userId(), { name: values.machine }, on);
+      if (!changed.length) throw new Error(`No machine named ${values.machine}.`);
+      console.log(`${changed.map((m) => m.name).join(", ")}: ${on ? "taking new jobs" : "not taking new jobs; it finishes the ones it has"}.`);
+      break;
+    }
     default:
-      console.log("Usage: opnav-admin setup --name <name> | signin | token --role node|agent --label <label> | merge-usage --from <id> --into <id>");
+      console.log("Usage: opnav-admin setup --name <name> | signin | token --role node|agent --label <label> | merge-usage --from <id> --into <id> | machines | jobs-off --machine <name> | jobs-on --machine <name>");
   }
 } finally {
   await sql.end();

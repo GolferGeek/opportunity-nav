@@ -18,7 +18,7 @@ import {
 import type { Sql } from "./db.ts";
 import { authenticate, createToken, type Principal, type Role } from "./auth.ts";
 import { HttpError } from "./errors.ts";
-import { heartbeat, ingestExternal, ingestUsage, listMachines, machineForToken } from "./services/machines.ts";
+import { heartbeat, ingestExternal, ingestUsage, listMachines, machineForToken, setTakingJobs } from "./services/machines.ts";
 import { answerQuestion, cancelJob, claim, createJob, getJob, jobRow, NewJob, recordEvents, renewLease } from "./services/jobs.ts";
 import { createNode, listTree, NewTreeNode, TreeNodePatch, updateNode } from "./services/tree.ts";
 import { dashboard, happening } from "./services/views.ts";
@@ -174,6 +174,12 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     });
     r.post("/api/roadblocks/:id/clear", async (req) => runAction(sql, req.principal.userId, "clear_roadblock", { roadblockId: id(req) }, by(req)));
     r.get("/api/machines", async (req) => listMachines(sql, req.principal.userId));
+    r.patch("/api/machines/:id", async (req) => {
+      const b = z.object({ takingJobs: z.boolean() }).parse(req.body);
+      const [m] = await setTakingJobs(sql, req.principal.userId, { id: id(req) }, b.takingJobs);
+      if (!m) throw new HttpError(404, "No such machine.");
+      return { takingJobs: b.takingJobs };
+    });
     r.get("/api/tokens", async (req) =>
       sql`select id, role, label, created_at, last_used_at, revoked_at from api_tokens where user_id = ${req.principal.userId} order by created_at desc`);
     r.post("/api/tokens", async (req) => {

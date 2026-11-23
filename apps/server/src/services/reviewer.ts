@@ -195,7 +195,7 @@ export async function accountReadings(db: Db, userId: string, providers: readonl
 }
 
 export type MachineView = {
-  id: string; online: boolean; revoked: boolean; providers: unknown; checkouts: unknown; tools: string[]; capacity: number; running: number;
+  id: string; online: boolean; revoked: boolean; providers: unknown; checkouts: unknown; tools: string[]; capacity: number; running: number; takingJobs?: boolean;
 };
 
 /** The machines that can run this provider's job right now, or why none can. */
@@ -215,7 +215,7 @@ function freeOrWhy(machines: MachineView[], provider: string, want: { remote: st
   const withTools = withRepo.filter((m) => want.needs.every((n) => m.tools.includes(n)));
   if (!withTools.length) return { ids: [], why: `no machine that runs it has ${want.needs.join(" and ")}` };
   const capable = withTools.map((m) => m.id);
-  const free = withTools.filter((m) => m.running < m.capacity);
+  const free = withTools.filter((m) => m.takingJobs !== false && m.running < m.capacity);
   if (!free.length) return { ids: [], capable, why: want.machineId ? "that machine is busy" : withTools.length > 1 ? "every machine that runs it is busy" : "the machine that runs it is busy" };
   return { ids: free.map((m) => m.id), capable };
 }
