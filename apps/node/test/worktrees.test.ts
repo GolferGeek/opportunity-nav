@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import type { JobSpec } from "@opnav/shared";
+import { checkouts } from "../src/capabilities.ts";
 import { system } from "../src/system.ts";
 import { agyOutcome, pushHold, runWorker, workerArgs } from "../src/worker.ts";
 import { gitReason, oneAtATime, openWorktree, pruneWorktrees, worktreeEnv } from "../src/worktrees.ts";
@@ -261,7 +262,7 @@ async function pushFixture(t: TestContext, agent: (home: string) => string[] = (
     "echo '{\"type\":\"turn.completed\",\"usage\":{}}'",
   ].join("\n") + "\n");
   await chmod(worker, 0o755);
-  const spec: JobSpec = { ...job, checkoutPath: checkout, provider: "codex", title: "Fix it", push: true };
+  const spec: JobSpec = { ...job, checkoutPath: checkout, provider: "codex", title: "Fix it", push: true, remote: origin };
   const run = async (onEvent?: (event: { type: string; text?: string }, cancel: () => void) => void) => {
     const events: { type: string; text?: string }[] = [];
     const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const, job: spec };
@@ -397,17 +398,16 @@ test("a job that pushes never publishes commits from another local branch, even 
 test("a job that pushes publishes nothing when it couldn't start from origin", async t => {
   // origin can't be reached when the job starts, so it starts from the checkout's unpushed HEAD.
   // By the end origin answers again; the local history must still stay here.
-  const { origin, checkout, spec, run } = await pushFixture(t, home =>
-    [`git remote set-url origin '${join(home, "origin.git")}'`]);
+  const { home, origin, checkout, spec, run } = await pushFixture(t, home =>
+    [`mv '${join(home, "origin.away")}' '${join(home, "origin.git")}'`]);
   await writeFile(join(checkout, "secret.txt"), "local only\n");
   git(checkout, "add", "secret.txt");
   git(checkout, "commit", "--quiet", "-m", "Local only");
-  git(checkout, "remote", "set-url", "origin", join(checkout, "..", "missing.git"));
   const before = git(origin, "rev-parse", "main");
+  await rename(origin, join(home, "origin.away"));
   const branch = `opnav/${spec.id.slice(0, 8)}`;
   const { outcome, progress } = await run();
   assert.deepEqual(outcome, { type: "result", summary: "Done." });
-  assert.equal(git(checkout, "remote", "get-url", "origin"), origin);
   assert.equal(progress.at(-1), `Not pushed: the job couldn't start from main on origin, and its branch may hold commits from this machine that aren't on origin. The work is on branch ${branch} on this machine.`);
   assert.equal(git(origin, "rev-parse", "main"), before);
   assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
@@ -472,17 +472,134 @@ test("a job that pushes publishes nothing for an empty or unreadable answer", as
 });
 
 test("a job that pushes never pushes to a fork set up as origin's push address", async t => {
+  // Set up before the job: it doesn't start.
   const { home, origin, checkout, spec, run } = await pushFixture(t);
   const fork = join(home, "fork.git");
   git(home, "clone", "--quiet", "--bare", origin, fork);
   git(checkout, "config", "remote.origin.pushurl", fork);
   const before = git(origin, "rev-parse", "main");
-  const branch = `opnav/${spec.id.slice(0, 8)}`;
-  const { progress } = await run();
-  assert.equal(progress.at(-1), `Not pushed: origin's address isn't only the repo the job started from. The work is on branch ${branch} on this machine.`);
+  const { outcome, progress } = await run();
+  assert.deepEqual(outcome, { type: "error", code: "other", retryable: false,
+    message: "This checkout can't run the job: origin's push address isn't the project's repo." });
+  assert.deepEqual(progress, []);
   assert.equal(git(origin, "rev-parse", "main"), before);
   assert.equal(git(fork, "rev-parse", "main"), before);
   assert.equal(git(fork, "branch", "--list", "opnav/*"), "");
+
+  // Set up while the job runs: the work stays here.
+  const late = await pushFixture(t, () => [`git config remote.origin.pushurl '${fork}'`]);
+  const lateBefore = git(late.origin, "rev-parse", "main");
+  const branch = `opnav/${late.spec.id.slice(0, 8)}`;
+  assert.equal((await late.run()).progress.at(-1), `Not pushed: origin's push address isn't the project's repo. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(late.origin, "rev-parse", "main"), lateBefore);
+  assert.equal(git(late.origin, "branch", "--list", "opnav/*"), "");
+});
+
+test("a job doesn't run in a checkout whose origin isn't the project's repo", async t => {
+  // The machine's checkout record is stale: that path now holds another repo.
+  for (const push of [true, false]) {
+    const { home, origin, checkout, spec, run } = await pushFixture(t);
+    const other = join(home, "unrelated.git");
+    git(home, "clone", "--quiet", "--bare", origin, other);
+    git(checkout, "remote", "set-url", "origin", other);
+    spec.push = push;
+    const before = git(other, "rev-parse", "main");
+    const { outcome, progress } = await run();
+    assert.deepEqual(outcome, { type: "error", code: "other", retryable: false,
+      message: "This checkout can't run the job: origin isn't the project's repo." });
+    assert.deepEqual(progress, []);
+    for (const repo of [origin, other]) {
+      assert.equal(git(repo, "rev-parse", "main"), before);
+      assert.equal(git(repo, "branch", "--list", "opnav/*"), "");
+    }
+    assert.equal(git(checkout, "worktree", "list").split("\n").length, 1, "no worktree was made");
+  }
+});
+
+test("a job doesn't run when a Git setting rewrites origin's address to another repo", async t => {
+  for (const setting of ["insteadOf", "pushInsteadOf"]) {
+    const { home, origin, checkout, spec, run } = await pushFixture(t);
+    const fork = join(home, "fork.git");
+    git(home, "clone", "--quiet", "--bare", origin, fork);
+    // The raw address is still origin; Git would really talk to the fork.
+    git(checkout, "config", `url.${fork}.${setting}`, origin);
+    assert.equal(git(checkout, "config", "--get", "remote.origin.url"), origin);
+    const before = git(origin, "rev-parse", "main");
+    const { outcome, progress } = await run();
+    assert.deepEqual(outcome, { type: "error", code: "other", retryable: false,
+      message: `This checkout can't run the job: ${setting === "insteadOf" ? "origin isn't" : "origin's push address isn't"} the project's repo.` }, setting);
+    assert.deepEqual(progress, []);
+    assert.equal(git(fork, "rev-parse", "main"), before);
+    assert.equal(git(fork, "branch", "--list", "opnav/*"), "");
+  }
+});
+
+test("a job doesn't run when Git would rewrite origin's address again on the way out", async t => {
+  // origin is a short alias Git expands to the real repo; a second rule would send that real
+  // address to a fork when the helper fetches or pushes it directly.
+  const { home, origin, checkout, spec, run } = await pushFixture(t);
+  const fork = join(home, "fork.git");
+  git(home, "clone", "--quiet", "--bare", origin, fork);
+  git(checkout, "remote", "set-url", "origin", "short:repo");
+  git(checkout, "config", `url.${origin}.insteadOf`, "short:repo");
+  git(checkout, "config", `url.${fork}.pushInsteadOf`, origin);
+  assert.equal(git(checkout, "remote", "get-url", "--push", "origin"), origin, "origin itself looks right");
+  const { outcome } = await run();
+  assert.deepEqual(outcome, { type: "error", code: "other", retryable: false,
+    message: "This checkout can't run the job: a Git setting rewrites origin's address." });
+  assert.equal(git(fork, "branch", "--list", "opnav/*"), "");
+});
+
+test("a job doesn't run when a Git remote is named after origin's address", async t => {
+  // Git reads remote.<address>.pushurl when it pushes to that address.
+  const { home, origin, checkout, spec, run } = await pushFixture(t);
+  const fork = join(home, "fork.git");
+  git(home, "clone", "--quiet", "--bare", origin, fork);
+  git(checkout, "config", `remote.${origin}.pushurl`, fork);
+  const { outcome } = await run();
+  assert.deepEqual(outcome, { type: "error", code: "other", retryable: false,
+    message: "This checkout can't run the job: a Git remote is named after origin's address." });
+  assert.equal(git(fork, "branch", "--list", "opnav/*"), "");
+});
+
+test("a job that pushes publishes nothing when a rewrite of its checked address appears while it runs", async t => {
+  // The agent can't change where origin points, but it could add a rewrite that catches the
+  // address the helper checked. That's checked again right before pushing.
+  for (const setting of ["insteadOf", "pushInsteadOf"]) {
+    const { origin, spec, run } = await pushFixture(t, home => [
+      `git clone --quiet --bare '${join(home, "origin.git")}' '${join(home, "fork.git")}'`,
+      `git config 'url.${join(home, "fork.git")}.${setting}' '${join(home, "origin.git")}'`,
+    ]);
+    const before = git(origin, "rev-parse", "main");
+    const branch = `opnav/${spec.id.slice(0, 8)}`;
+    const { progress } = await run();
+    assert.equal(progress.at(-1), `Not pushed: ${setting === "insteadOf" ? "origin isn't" : "origin's push address isn't"} the project's repo. The work is on branch ${branch} on this machine.`, setting);
+    assert.equal(git(origin, "rev-parse", "main"), before);
+    const fork = join(dirname(origin), "fork.git");
+    assert.equal(git(fork, "rev-parse", "main"), before);
+    assert.equal(git(fork, "branch", "--list", "opnav/*"), "");
+  }
+});
+
+test("a job that pushes keeps its work here when the server didn't say which repo it belongs to", async t => {
+  const { origin, spec, run } = await pushFixture(t);
+  delete spec.remote;
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { outcome, progress } = await run();
+  assert.deepEqual(outcome, { type: "result", summary: "Done." });
+  assert.match(progress.at(-1)!, /^Not pushed: /);
+  assert.ok(progress.at(-1)!.endsWith(`The work is on branch ${branch} on this machine.`));
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+});
+
+test("a checkout reports origin's address as Git will really use it", async t => {
+  const { home, checkout } = await fixture(t);
+  git(checkout, "remote", "add", "origin", "gh:Team/repo");
+  git(checkout, "config", "url.git@github.com:.insteadOf", "gh:");
+  const sys = system({ home, env: { PATH: process.env.PATH } });
+  assert.deepEqual((await checkouts(sys, [home], 1)).find(c => c.path === checkout)?.remote, "github.com/Team/repo");
 });
 
 test("Git's error text never leaves the machine, only a fixed reason", () => {
@@ -512,6 +629,6 @@ test("Git never asks for a sign-in: no prompt, no askpass, SSH in batch mode", a
   await chmod(ssh, 0o755);
   git(checkout, "config", "core.sshCommand", `${ssh} -o User=git`);
   git(checkout, "remote", "add", "origin", "ssh://example.invalid/team/repo.git");
-  await (await openWorktree(sys, { ...job, push: true })).release();
+  await (await openWorktree(sys, { ...job, push: true, remote: "example.invalid/team/repo" })).release();
   assert.match(await readFile(log, "utf8"), /-o User=git -o BatchMode=yes .*example\.invalid/);
 });

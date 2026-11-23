@@ -45,8 +45,9 @@ export async function checkouts(sys: System, roots: string[], maxDepth: number):
   async function scan(path: string, depth: number) {
     const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
     if (entries.some(entry => entry.name === ".git" && (entry.isDirectory() || entry.isFile()))) {
+      // origin's address as Git will really use it, after any insteadOf rewrite.
       const [remote, branch] = await Promise.all([
-        command(sys, "git", ["config", "--get", "remote.origin.url"], path),
+        command(sys, "git", ["remote", "get-url", "origin"], path),
         command(sys, "git", ["branch", "--show-current"], path),
       ]);
       found.set(path, { path, remote: normalizeRemote(remote), branch: branch || undefined });

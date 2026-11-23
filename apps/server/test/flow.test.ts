@@ -118,6 +118,7 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     const t = turns[0];
     assert.equal(t.kind, "start");
     assert.equal(t.job.checkoutPath, "/home/laptop/Projects/opportunity-nav");
+    assert.equal(t.job.remote, "github.com/golfergeek/opportunity-nav", "the claim says which repo the job belongs to");
     assert.equal((await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns.length, 0, "not handed out twice");
 
     const ev = (seq: number, e: object) => ({ seq, at: now(), ...e });

@@ -183,6 +183,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
           runner: r.runner,
           effort: r.effort ?? undefined,
           checkoutPath,
+          remote: r.repo_remote,
           nodeId: machineId,
           issueUrl: r.issue_url ?? undefined,
           ...(r.push ? { push: true } : {}),

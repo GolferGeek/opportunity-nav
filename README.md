@@ -74,6 +74,9 @@ A job started with `push` (a handoff brief with `push: true` does this) lands it
 - When it succeeds, the helper pushes it there. If origin moved on, it rebases first.
 - If that conflicts or the push is refused, it pushes `opnav/<id>` instead, and the job's last progress line says so.
 
+A job runs only in a checkout whose origin is the project's repo, as Git will really reach it (after any `insteadOf` or `pushInsteadOf` rewrite).
+If it isn't, the job ends at once and says why. A pushing job checks again right before it pushes, and fetches and pushes only the addresses it checked.
+
 A machine runs up to 3 jobs at once, each in its own worktree. Set `OPNAV_CAPACITY` (1 to 16) on the machine to change that.
 Jobs in the same repo prepare their worktrees and push one at a time, so each push lands on top of the last.
 
