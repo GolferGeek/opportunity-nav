@@ -140,3 +140,28 @@ test("Antigravity in edit mode may run commands inside its sandbox, and an empty
   assert.deepEqual(agyOutcome({ status: "SUCCESS", response: "Looks good." }), { failed: false, result: "Looks good.", blocked: undefined });
   assert.equal(agyOutcome({ status: "ERROR", error: "boom" }).failure, "boom");
 });
+
+test("an Antigravity failure says why it failed instead of a generic error", async t => {
+  const { sys, home, job } = await fixture(t);
+  const worker = join(home, "fake-agy");
+  const run = async (result: object) => {
+    await writeFile(worker, `#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' '${JSON.stringify({ event: "result", result })}'\n`);
+    await chmod(worker, 0o755);
+    const events: unknown[] = [];
+    const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const,
+      job: { ...job, id: randomUUID(), provider: "agy" as const } };
+    return { outcome: await runWorker(sys, worker, turn, new AbortController().signal, event => events.push(event)), events };
+  };
+
+  const refused = await run({ status: "SUCCESS", response: "", denied_actions: [{ action: "command", display_name: "Bash" }] });
+  assert.ok(refused.events.some(event => JSON.stringify(event).includes("Antigravity could not get permission to run Bash.")));
+  assert.deepEqual(refused.outcome, { type: "error", code: "provider_error",
+    message: "Antigravity could not get permission to run Bash.", retryable: false });
+  assert.deepEqual((await run({ status: "SUCCESS", response: "" })).outcome, { type: "error", code: "provider_error",
+    message: "Antigravity stopped without an answer.", retryable: false });
+  assert.deepEqual((await run({ status: "ERROR", error: "Model overloaded,\n try later" })).outcome, { type: "error",
+    code: "provider_error", message: "Model overloaded, try later", retryable: false });
+  // Known causes keep their own plain message.
+  assert.deepEqual((await run({ status: "ERROR", error: "Rate limit exceeded" })).outcome, { type: "error",
+    code: "rate_limited", message: "The worker reached its usage limit.", retryable: true });
+});

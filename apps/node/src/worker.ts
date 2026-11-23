@@ -88,7 +88,8 @@ export function agyOutcome(final: Record<string, unknown>): { failed: boolean; r
   return { failed: false, result, blocked };
 }
 
-export function errorEvent(details: string, crashed = false): Terminal {
+/** `reason` is a plain sentence saying why the worker failed, shown instead of the generic message. */
+export function errorEvent(details: string, crashed = false, reason?: string): Terminal {
   if (/unauthorized|not logged in|authentication|auth required|invalid api key|please log in/i.test(details)) {
     return { type: "error", code: "auth_required", message: "Sign in to the worker and try again.", retryable: false };
   }
@@ -96,7 +97,7 @@ export function errorEvent(details: string, crashed = false): Terminal {
     return { type: "error", code: "rate_limited", message: "The worker reached its usage limit.", retryable: true };
   }
   return { type: "error", code: crashed ? "worker_crashed" : "provider_error",
-    message: crashed ? "The worker stopped before finishing." : "The worker reported an error.", retryable: false };
+    message: reason ?? (crashed ? "The worker stopped before finishing." : "The worker reported an error."), retryable: false };
 }
 
 export async function runWorker(sys: System, binary: string, turn: Turn, signal: AbortSignal,
@@ -165,6 +166,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   let stderr = "";
   let failure = "";
   let failed = false;
+  let reason: string | undefined;
   let crashed = false;
   let complete = false;
   proc.on("error", () => { crashed = true; });
@@ -238,6 +240,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
         failed = outcome.failed;
         result = outcome.result;
         if (outcome.failure) failure = outcome.failure;
+        if (outcome.failed) reason = outcome.blocked ?? shortText(outcome.failure);
         if (outcome.blocked) emit({ type: "blocked", text: outcome.blocked });
         usage(final.usage);
       }
@@ -285,6 +288,6 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   signal.removeEventListener("abort", abort);
   lines.close();
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
-  if (exit !== 0 || failed || !complete) return errorEvent(`${failure}\n${stderr}`, crashed || !complete && !failed);
+  if (exit !== 0 || failed || !complete) return errorEvent(`${failure}\n${stderr}`, crashed || !complete && !failed, reason);
   return terminal(result ?? "");
 }
