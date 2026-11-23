@@ -311,6 +311,10 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal(c[0].windows[0].percent, 30);
     const [kept] = await sql`select hidden, merged_into from subscriptions where id = ${dup!.id}`;
     assert.deepEqual([kept!.hidden, kept!.merged_into], [true, survivor!.id], "old card is hidden, not deleted");
+    // Each machine's own reports of the account are kept, and follow it when it's folded.
+    const src = await sql`select n.name, u.status from usage_sources u join nodes n on n.id = u.node_id where u.subscription_id = ${survivor!.id} order by n.name`;
+    assert.deepEqual(src.map((r) => [r.name, r.status]), [["laptop", "ok"], ["studio", "stale"]]);
+    assert.equal((await sql`select count(*)::int as n from usage_sources where subscription_id = ${dup!.id}`)[0]!.n, 0);
   });
 
   test("check now: online machines read usage at their next heartbeat, once", async () => {
@@ -489,6 +493,14 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     const dash = await ok(ui, "GET", "/api/dashboard");
     assert.equal(dash.subscriptions.find((s: any) => s.provider === "agy").current, false);
     assert.equal(dash.subscriptions.find((s: any) => s.provider === "codex").current, true);
+
+    // Antigravity's reading only has its Claude and GPT group: no Gemini reading, so it counts as half left
+    // and beats Codex (30% on the laptop) for its fair share.
+    await ok(node, "POST", "/api/node/usage", { observedAt: now(), accounts: [{ provider: "agy", accountKey: key("r2-agy"), status: "ok", fetchedAt: now(),
+      windows: [{ id: "Claude and GPT models:3p-weekly", label: "Claude and GPT", kind: "weekly", unit: "percent", used: 100, resetsAt: week }] }] });
+    r = await review();
+    assert.equal(r.provider, "agy");
+    assert.equal(r.picked.why, "Antigravity has no usage reading for its default model (counted as half left). Codex has 30% left.");
 
     // A project whose repo no machine has.
     const [area] = await sql`select id from tree_nodes where kind = 'area' and title = 'Golfer Geek'`;

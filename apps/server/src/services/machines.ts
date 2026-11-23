@@ -96,6 +96,11 @@ export async function ingestUsage(sql: Sql, userId: string, machineId: string, r
           fetched_at = greatest(fetched_at, ${fetchedAt}), observed_at = ${report.observedAt}, reported_by = ${machineId}
           where id = ${id}`;
       }
+      // This machine reads this account (whatever card wins the reading above).
+      await tx`insert into usage_sources (subscription_id, node_id, status, fetched_at, observed_at)
+        values (${id}, ${machineId}, ${a.status}, ${fetchedAt}, ${report.observedAt})
+        on conflict (subscription_id, node_id) do update set status = excluded.status,
+          fetched_at = greatest(usage_sources.fetched_at, excluded.fetched_at), observed_at = excluded.observed_at`;
       if (hasNewerWindows) {
         await tx`delete from usage_windows where subscription_id = ${id}`;
         for (const w of a.windows) {
@@ -130,6 +135,13 @@ export async function mergeSubscriptions(db: Db, userId: string, fromId: string,
   }
   await db`update subscriptions set monthly_cost_usd = coalesce(monthly_cost_usd, ${from.monthly_cost_usd}),
     label = coalesce(label, ${from.label}) where id = ${intoId}`;
+  // The machines that read the old card read the survivor.
+  await db`insert into usage_sources (subscription_id, node_id, status, fetched_at, observed_at)
+    select ${intoId}, node_id, status, fetched_at, observed_at from usage_sources where subscription_id = ${fromId}
+    on conflict (subscription_id, node_id) do update set
+      status = case when excluded.observed_at > usage_sources.observed_at then excluded.status else usage_sources.status end,
+      fetched_at = greatest(usage_sources.fetched_at, excluded.fetched_at), observed_at = greatest(usage_sources.observed_at, excluded.observed_at)`;
+  await db`delete from usage_sources where subscription_id = ${fromId}`;
   await db`update subscriptions set hidden = true, merged_into = ${intoId} where id = ${fromId}`;
   // Anything already folded into the old card follows it.
   await db`update subscriptions set merged_into = ${intoId} where merged_into = ${fromId}`;

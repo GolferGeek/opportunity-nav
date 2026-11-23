@@ -131,7 +131,7 @@ export const actions = {
     },
   },
   start_review: {
-    description: "Start a review job in a project, and let the agent be picked: of Antigravity and Codex (or the agents in among), the one with more subscription usage left goes, as long as a machine with a free slot can run it now; otherwise the other one. Usage readings that aren't current rank below current ones. The reply says which was picked and why. Otherwise like start_job.",
+    description: "Start a review job in a project, and let the agent be picked: of Antigravity and Codex (or the agents in among), the one with more subscription usage left goes, as long as a machine with a free slot can run it now; otherwise the other one. Usage readings that aren't current rank below current ones; Antigravity with no reading for its default model counts as half left. The reply says which was picked and why. Otherwise like start_job.",
     input: z.object({
       item: Ref.describe("The project (or an item inside it) to review"),
       prompt: z.string().min(1).describe("What to review and what to do with what it finds"),

@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { accountLeft, bestAccount, freeMachines, pickReason, rankReviewers, staleText, type MachineView } from "../src/services/reviewer.ts";
+import { accountLeft, ASSUMED_LEFT, bestMachine, freeMachines, pickReason, rankReviewers, staleText, type AccountReading, type MachineView } from "../src/services/reviewer.ts";
 
 const now = Date.parse("2026-11-23T12:00:00Z");
 const later = "2026-11-24T12:00:00Z", earlier = "2026-11-22T12:00:00Z";
@@ -76,6 +76,18 @@ describe("rank reviewers", () => {
   });
 });
 
+describe("Antigravity's fair share", () => {
+  test("with no Gemini reading, Antigravity counts as half left", () => {
+    assert.equal(ASSUMED_LEFT.agy, 50);
+    const agy = { provider: "agy", left: ASSUMED_LEFT.agy!, assumed: true };
+    assert.equal(rankReviewers([agy, { provider: "codex", left: 30 }])!.provider, "agy", "beats Codex with less than half left");
+    assert.equal(rankReviewers([agy, { provider: "codex", left: 80 }])!.provider, "codex", "loses to Codex with more than half left");
+    assert.equal(rankReviewers([agy, { provider: "codex", left: 90, stale: "read 3 h ago" }])!.provider, "agy", "ranks like a current reading");
+    const all = [agy, { provider: "codex", left: 30 }];
+    assert.equal(pickReason(agy, all), "Antigravity has no usage reading for its default model (counted as half left). Codex has 30% left.");
+  });
+});
+
 describe("readings that aren't current", () => {
   test("rank below every current reading, above no reading", () => {
     assert.equal(rankReviewers([{ provider: "agy", left: 90, stale: "read 3 h ago" }, { provider: "codex", left: 5 }])!.provider, "codex");
@@ -103,24 +115,36 @@ describe("readings that aren't current", () => {
 });
 
 describe("accounts and machines", () => {
-  test("one account: it counts, whoever reported it, and the job isn't pinned", () => {
-    assert.deepEqual(bestAccount([{ left: 40, reportedBy: "m1" }], ["m2"]), { account: { left: 40, reportedBy: "m1" }, machineId: undefined });
+  const readings = (accounts: AccountReading[], links: Record<string, string> = {}) => ({ accounts, byMachine: new Map(Object.entries(links)) });
+  test("one account: every machine is on it, and the job isn't pinned", () => {
+    const a = { id: "A", left: 40 };
+    assert.deepEqual(bestMachine(readings([a], { m1: "A" }), ["m2"], ["m1", "m2"]), { account: a, machineId: undefined });
   });
-  test("more than one: the account a free machine reported counts, and the job goes there", () => {
-    const a = { left: 90, reportedBy: "busy" }, b = { left: 30, reportedBy: "free" };
-    assert.deepEqual(bestAccount([a, b], ["free"]), { account: b, machineId: "free" });
-    assert.deepEqual(bestAccount([a, b], ["free", "busy"]), { account: a, machineId: "busy" });
+  test("a free machine's own account counts, and the job goes there", () => {
+    const a = { id: "A", left: 90 }, b = { id: "B", left: 30 };
+    const r = readings([a, b], { busy: "A", free: "B" });
+    assert.deepEqual(bestMachine(r, ["free"], ["busy", "free"]), { account: b, machineId: "free" });
+    assert.deepEqual(bestMachine(r, ["free", "busy"], ["busy", "free"]), { account: a, machineId: "busy" });
   });
-  test("more than one, none reported by a free machine: the best counts, unpinned", () => {
-    const a = { left: 90, reportedBy: "x" }, b = { left: 30, reportedBy: "y" };
-    assert.deepEqual(bestAccount([a, b], ["z"]), { account: a, machineId: undefined });
+  test("a reading isn't shared with a machine on another account", () => {
+    // m2 runs it but never reported an account; with two accounts known, it has no reading.
+    const r = readings([{ id: "A", left: 90 }, { id: "B", left: 30 }], { m1: "A" });
+    assert.deepEqual(bestMachine(r, ["m2"], ["m1", "m2"]), { account: null });
+    // The account m1 reads doesn't carry over to m2 just because both run the agent.
+    assert.equal(bestMachine(readings([{ id: "A", left: 90 }, { id: "B", left: 10 }], { m1: "A", m2: "B" }), ["m2"], ["m1", "m2"]).account!.left, 10);
+  });
+  test("a machine with no reading beats one whose account is empty", () => {
+    const r = readings([{ id: "A", left: 0 }, { id: "B", left: 50 }], { m1: "A" });
+    assert.deepEqual(bestMachine(r, ["m1", "m2"], ["m1", "m2"]), { account: null });
   });
   test("a current account beats a fuller one that isn't", () => {
-    const a = { left: 90, stale: "read 3 h ago", reportedBy: "m1" }, b = { left: 30, reportedBy: "m2" };
-    assert.equal(bestAccount([a, b], ["m1", "m2"])!.account, b);
+    const a = { id: "A", left: 90, stale: "read 3 h ago" }, b = { id: "B", left: 30 };
+    assert.equal(bestMachine(readings([a, b], { m1: "A", m2: "B" }), ["m1", "m2"], ["m1", "m2"]).account, b);
   });
-  test("no readings: none", () => {
-    assert.equal(bestAccount([{ left: null, reportedBy: "m1" }], ["m1"]), null);
+  test("no free machine: the best account overall, for the reply", () => {
+    const a = { id: "A", left: 20 }, b = { id: "B", left: 60 };
+    assert.deepEqual(bestMachine(readings([a, b], { m1: "A" }), [], ["m1"]), { account: b });
+    assert.deepEqual(bestMachine(readings([{ id: "A", left: null }]), [], []), { account: null });
   });
 
   const m = (id: string, over: Partial<MachineView> = {}): MachineView => ({
@@ -129,11 +153,11 @@ describe("accounts and machines", () => {
   });
   const want = { remote: "r", needs: [] as string[] };
   test("a machine with a free slot can run now; a busy one can't", () => {
-    assert.deepEqual(freeMachines([m("a"), m("b", { running: 1 })], "codex", want), { ids: ["a"] });
-    assert.deepEqual(freeMachines([m("a", { running: 1 })], "codex", want), { ids: [], why: "the machine that runs it is busy" });
-    assert.deepEqual(freeMachines([m("a", { running: 1 }), m("b", { running: 1 })], "codex", want), { ids: [], why: "every machine that runs it is busy" });
-    assert.deepEqual(freeMachines([m("a", { running: 1, capacity: 2 })], "codex", want), { ids: ["a"] });
-    assert.deepEqual(freeMachines([m("a", { running: 1 })], "codex", { ...want, machineId: "a" }), { ids: [], why: "that machine is busy" });
+    assert.deepEqual(freeMachines([m("a"), m("b", { running: 1 })], "codex", want), { ids: ["a"], capable: ["a", "b"] });
+    assert.deepEqual(freeMachines([m("a", { running: 1 })], "codex", want), { ids: [], capable: ["a"], why: "the machine that runs it is busy" });
+    assert.deepEqual(freeMachines([m("a", { running: 1 }), m("b", { running: 1 })], "codex", want), { ids: [], capable: ["a", "b"], why: "every machine that runs it is busy" });
+    assert.deepEqual(freeMachines([m("a", { running: 1, capacity: 2 })], "codex", want), { ids: ["a"], capable: ["a"] });
+    assert.deepEqual(freeMachines([m("a", { running: 1 })], "codex", { ...want, machineId: "a" }), { ids: [], capable: ["a"], why: "that machine is busy" });
   });
   test("the other reasons, in order", () => {
     assert.equal(freeMachines([m("a", { online: false })], "codex", want).why, "no machine is online");
