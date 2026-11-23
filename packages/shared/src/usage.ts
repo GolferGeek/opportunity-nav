@@ -64,3 +64,14 @@ export const UsageReport = z.object({
   accounts: z.array(UsageAccount),
 });
 export type UsageReport = z.infer<typeof UsageReport>;
+
+/**
+ * A reading counts as current when its last poll was good and recent. Usage is
+ * read every 5 minutes; after 30 minutes without a good read, it's not current.
+ */
+export const READING_CURRENT_MS = 30 * 60_000;
+
+export function readingIsCurrent(status: string, fetchedAt: Date | string | null | undefined, now = Date.now()): boolean {
+  if (status !== "ok" || !fetchedAt) return false;
+  return now - new Date(fetchedAt).getTime() < READING_CURRENT_MS;
+}

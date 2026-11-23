@@ -56,6 +56,11 @@ export const NodeHeartbeat = z.object({
   tools: z.array(MachineTool).default([]),
   /** Jobs this node currently holds leases on, so the server can expire the rest. */
   activeJobIds: z.array(z.string().uuid()).default([]),
+  /**
+   * How many jobs this helper runs at once. The server counts its running jobs
+   * against this to know whether the machine has a free slot right now.
+   */
+  capacity: z.number().int().positive().default(1),
 });
 export type NodeHeartbeat = z.infer<typeof NodeHeartbeat>;
 
