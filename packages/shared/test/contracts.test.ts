@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { JobEvent, NodeHeartbeat, readingIsCurrent, UsageReport } from "../src/index.ts";
+import { ClaimRequest, JobEvent, NodeHeartbeat, readingIsCurrent, Runner, UsageReport } from "../src/index.ts";
 
 test("usage report rejects a token-shaped account key", () => {
   const r = UsageReport.safeParse({
@@ -27,4 +27,13 @@ test("a reading is current only when its last poll was good and recent", () => {
   assert.equal(readingIsCurrent("stale", "2026-11-23T11:59:00Z", now), false);
   assert.equal(readingIsCurrent("auth_required", "2026-11-23T11:59:00Z", now), false);
   assert.equal(readingIsCurrent("ok", null, now), false);
+});
+
+test("a node can offer only Claude cloud jobs", () => {
+  assert.equal(Runner.parse("claude-cloud"), "claude-cloud");
+  assert.equal(ClaimRequest.parse({ providers: [], claudeCloud: true }).claudeCloud, true);
+  assert.equal(ClaimRequest.safeParse({ providers: [] }).success, false);
+  const hb = NodeHeartbeat.parse({ hostname: "h", platform: "darwin", arch: "arm64", helperVersion: "0.1.0", providers: [],
+    claudeCloud: { ready: false, reason: "not set up" } });
+  assert.deepEqual(hb.claudeCloud, { ready: false, reason: "not set up" });
 });

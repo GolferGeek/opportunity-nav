@@ -38,7 +38,7 @@ export const JobSpec = z.object({
   /** Exact model id; omitted = provider default. */
   model: z.string().optional(),
   location: Location,
-  /** What runs it: the node directly, or Cloudroom's cloud. */
+  /** What runs it: the node directly, Cloudroom's cloud, or Claude's cloud through a routine. */
   runner: Runner.default("direct"),
   /** Optional reasoning effort hint, passed through when the provider supports one. */
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
@@ -71,9 +71,11 @@ export const ClaimRequest = z.object({
   providers: z.array(ProviderId),
   /** Providers this node will take right now as Cloudroom jobs (see NodeHeartbeat.cloudroom). */
   cloudroomProviders: z.array(ProviderId).default([]),
+  /** This node will take Claude jobs for Claude's cloud right now (see NodeHeartbeat.claudeCloud). */
+  claudeCloud: z.boolean().default(false),
   /** Max turns to hand out in this call. */
   max: z.number().int().positive().default(1),
-}).refine((r) => r.providers.length + r.cloudroomProviders.length > 0, "Offer at least one agent, direct or through Cloudroom.");
+}).refine((r) => r.providers.length + r.cloudroomProviders.length > 0 || r.claudeCloud, "Offer at least one agent, direct or in a cloud.");
 export type ClaimRequest = z.infer<typeof ClaimRequest>;
 
 export const Turn = z.object({

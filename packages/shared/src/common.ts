@@ -39,9 +39,12 @@ export type MachineTool = z.infer<typeof MachineTool>;
  * in a worktree on that machine. cloudroom = the node hands the job to
  * Cloudroom (cloudroom.dev), which runs the same CLI in its own cloud sandbox
  * on the person's own subscription, starting from the repo's GitHub default
- * branch and pushing the work to a branch.
+ * branch and pushing the work to a branch. claude-cloud = the node fires the
+ * person's Claude Code routine (claude.ai/code/routines) with the job, and the
+ * cloud session pushes its work to a claude/opnav-… branch that the node brings
+ * back into the job's worktree. Claude only.
  */
-export const Runner = z.enum(["direct", "cloudroom"]);
+export const Runner = z.enum(["direct", "cloudroom", "claude-cloud"]);
 export type Runner = z.infer<typeof Runner>;
 
 export const Id = z.string().uuid();
