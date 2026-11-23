@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IsoTime, Location, ProviderId } from "./common.ts";
+import { IsoTime, Location, MachineTool, ProviderId } from "./common.ts";
 
 /**
  * A "node" is one machine running the helper (inside the desktop app, or as a
@@ -52,6 +52,8 @@ export const NodeHeartbeat = z.object({
    * is installed, running and signed in). Lists our provider ids it can run there.
    */
   cloudroom: z.object({ providers: z.array(ProviderId).default([]) }).optional(),
+  /** What this machine has for jobs that need more than the agent and the repo (see MachineTool). */
+  tools: z.array(MachineTool).default([]),
   /** Jobs this node currently holds leases on, so the server can expire the rest. */
   activeJobIds: z.array(z.string().uuid()).default([]),
 });

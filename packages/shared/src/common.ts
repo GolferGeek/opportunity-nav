@@ -14,9 +14,25 @@ export const ProviderId = z.enum([
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
-/** Where a job's model runs. */
+/**
+ * Where a job's model runs: local = a model on the machine itself (Ollama,
+ * MLX); cloud = the provider's hosted model (Claude, Codex, Antigravity…).
+ * It is not which machine runs the job; pin a machine for that.
+ */
 export const Location = z.enum(["local", "cloud"]);
 export type Location = z.infer<typeof Location>;
+
+/** Providers whose models run on the machine itself. Every other provider is cloud only. */
+export const LOCAL_MODEL_PROVIDERS: readonly ProviderId[] = ["ollama", "mlx"];
+
+/**
+ * Something a job may need from the machine that runs it, beyond the agent and
+ * the repo. docker = a running Docker engine; database = a local Postgres for
+ * tests. A machine reports what it has; a job only goes to a machine that has
+ * everything it needs.
+ */
+export const MachineTool = z.enum(["docker", "database"]);
+export type MachineTool = z.infer<typeof MachineTool>;
 
 /**
  * What runs a job's agent. direct = the node starts the provider's CLI itself
