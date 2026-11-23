@@ -236,3 +236,88 @@ test("a worker that can't start says so", async t => {
   assert.deepEqual(await runWorker(sys, join(home, "missing-claude"), turn, new AbortController().signal, () => {}),
     { type: "error", code: "worker_crashed", message: "Claude could not start (ENOENT).", retryable: false });
 });
+
+/** A checkout cloned from a bare origin, and a second clone to move origin on with. */
+async function pushFixture(t: TestContext) {
+  const { sys, home, data, checkout: seed, job } = await fixture(t);
+  const origin = join(home, "origin.git");
+  git(home, "clone", "--quiet", "--bare", seed, origin);
+  const checkout = join(home, "clone");
+  git(home, "clone", "--quiet", origin, checkout);
+  const other = join(home, "other");
+  git(home, "clone", "--quiet", origin, other);
+  for (const repo of [checkout, other]) {
+    git(repo, "config", "user.name", "Test User");
+    git(repo, "config", "user.email", "test@example.com");
+  }
+  const worker = join(home, "fake-codex");
+  await writeFile(worker, [
+    "#!/bin/sh",
+    "cat > /dev/null",
+    "echo fixed > fix.txt",
+    "echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Done.\"}}'",
+    "echo '{\"type\":\"turn.completed\",\"usage\":{}}'",
+  ].join("\n") + "\n");
+  await chmod(worker, 0o755);
+  const spec: JobSpec = { ...job, checkoutPath: checkout, provider: "codex", title: "Fix it", push: true };
+  const run = async () => {
+    const events: { type: string; text?: string }[] = [];
+    const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const, job: spec };
+    const outcome = await runWorker(sys, worker, turn, new AbortController().signal, event => events.push(event as any));
+    return { outcome, progress: events.filter(e => e.type === "progress").map(e => e.text!) };
+  };
+  const moveOrigin = async (file: string, text: string) => {
+    git(other, "pull", "--quiet");
+    await writeFile(join(other, file), text);
+    git(other, "add", file);
+    git(other, "commit", "--quiet", "-m", `Elsewhere: ${file}`);
+    git(other, "push", "--quiet", "origin", "main");
+  };
+  return { sys, data, origin, checkout, spec, run, moveOrigin };
+}
+
+test("a job that pushes starts from origin's branch and lands its work there", async t => {
+  const { origin, checkout, run, moveOrigin } = await pushFixture(t);
+  // The checkout is behind origin; the job still starts from origin's main.
+  await moveOrigin("before.txt", "pushed before the job\n");
+  const { outcome, progress } = await run();
+  assert.deepEqual(outcome, { type: "result", summary: "Done." });
+  const sha = git(origin, "rev-parse", "--short", "main");
+  assert.equal(progress.at(-1), `Pushed to main as ${sha}.`);
+  assert.equal(git(origin, "show", "--name-only", "--format=", "main"), "fix.txt");
+  assert.equal(git(origin, "log", "-1", "--format=%s", "main~1"), "Elsewhere: before.txt");
+  // The checkout itself is left alone.
+  assert.equal(git(checkout, "status", "--porcelain"), "");
+  assert.equal(git(checkout, "log", "-1", "--format=%s"), "Initial commit");
+});
+
+test("a job that pushes rebases onto origin when it moved on while it ran", async t => {
+  const { origin, spec, run, moveOrigin, sys } = await pushFixture(t);
+  // The worktree exists from an earlier turn, then origin moves on.
+  await (await openWorktree(sys, spec)).release();
+  await moveOrigin("during.txt", "pushed during the job\n");
+  const { progress } = await run();
+  assert.match(progress.at(-1)!, /^Pushed to main as [a-f0-9]+\.$/);
+  assert.equal(git(origin, "log", "-2", "--format=%s", "main"), "Fix it\nElsewhere: during.txt");
+});
+
+test("a job that pushes falls back to its own branch when its work conflicts with origin", async t => {
+  const { origin, spec, run, moveOrigin, sys } = await pushFixture(t);
+  await (await openWorktree(sys, spec)).release();
+  await moveOrigin("fix.txt", "someone else's fix\n");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { progress } = await run();
+  assert.equal(progress.at(-1), `main moved on, and the work doesn't rebase cleanly onto it. Pushed the work to branch ${branch} instead.`);
+  assert.equal(git(origin, "show", "main:fix.txt"), "someone else's fix");
+  assert.equal(git(origin, "show", `${branch}:fix.txt`), "fixed");
+});
+
+test("a job without push never pushes", async t => {
+  const { origin, spec, run } = await pushFixture(t);
+  spec.push = false;
+  const before = git(origin, "rev-parse", "main");
+  const { progress } = await run();
+  assert.ok(!progress.some(p => /push/i.test(p)));
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+});

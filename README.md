@@ -67,7 +67,16 @@ Create an agent token in **Settings → Connect an agent**. Give the agent the c
 
 Start a job from any project: pick the agent, the model, and local or cloud. A machine that has the project's repo checked out and that agent signed in picks it up. If the agent needs you, the job stops with a question in **What's happening**. Your answer resumes the same session on the same machine.
 
-Coding jobs run in a separate Git worktree on branch `opnav/<first 8 characters of the job ID>`. Workers commit there and never push. The worktree stays available for follow-up turns and review under `~/.local/share/opportunity-nav/worktrees`, or `$XDG_DATA_HOME/opportunity-nav/worktrees`.
+Coding jobs run in a separate Git worktree on branch `opnav/<first 8 characters of the job ID>`. Workers commit there and never push.
+
+A job started with `push` (a handoff brief with `push: true` does this) lands its work instead:
+- Its worktree starts from the checkout's branch on origin, e.g. `main`.
+- When it succeeds, the helper pushes it there. If origin moved on, it rebases first.
+- If that conflicts or the push is refused, it pushes `opnav/<id>` instead, and the job's last progress line says so.
+
+## Handoff briefs on any machine
+
+The Mac Studio's handoff watcher (`~/Work/handoff`) can send a brief to Opportunity Nav instead of running it itself. A brief opts in with `worker:` in its frontmatter: `any`, a machine's name, or `cloudroom`. The watcher starts the job, waits for it, and writes the brief's report from the job's result. See `~/Work/handoff/PROTOCOL.md`. The worktree stays available for follow-up turns and review under `~/.local/share/opportunity-nav/worktrees`, or `$XDG_DATA_HOME/opportunity-nav/worktrees`.
 
 Run `opnav-node worktrees --prune` on the worker machine to remove clean, idle worktrees whose branch has been merged into its starting branch or whose job was first seen more than 14 days ago. Git branches stay available for review.
 
