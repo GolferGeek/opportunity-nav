@@ -59,7 +59,7 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
   return sql.begin(async (tx) => {
     const [job] = await tx`
       insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by, needs)
-      values (${userId}, ${project.id}, ${title}, ${j.prompt}, ${provider}, ${j.model ?? project.defaultModel ?? null},
+      values (${userId}, ${project.id}, ${title}, ${j.prompt}, ${provider}, ${j.model ?? (provider === project.defaultProvider ? project.defaultModel : null) ?? null},
               ${location}, ${j.effort ?? null}, ${runner}, 'queued', ${j.machineId ?? null}, ${j.machineId != null}, ${j.issueUrl ?? null}, ${createdBy},
               ${tx.json(needs)})
       returning *`;
