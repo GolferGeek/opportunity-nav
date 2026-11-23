@@ -31,7 +31,10 @@ export const NewJob = z.object({
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   /** What it needs from the machine (Docker, a test database); default = the project's. */
   needs: z.array(MachineTool).optional(),
-  /** direct = on a machine; cloudroom = in Cloudroom's cloud, handed over by a machine that has Cloudroom. */
+  /**
+   * direct = on a machine; cloudroom = in Cloudroom's cloud, handed over by a machine that has Cloudroom;
+   * claude-cloud = Claude in Claude's cloud, fired by a machine whose Claude Code routine is set up.
+   */
   runner: Runner.optional(),
   /** Pin to a machine. */
   machineId: z.string().uuid().optional(),
@@ -56,6 +59,10 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
   if (runner === "cloudroom") {
     if (!CLOUDROOM_PROVIDERS.has(provider)) throw new HttpError(400, `Cloudroom can run Claude, Codex or Antigravity, not ${provider}.`);
     if (location === "local") throw new HttpError(400, "Cloudroom runs in the cloud, so it can't use a local model.");
+  }
+  if (runner === "claude-cloud") {
+    if (provider !== "claude") throw new HttpError(400, `Claude's cloud runs only Claude, not ${providerLabel(provider)}.`);
+    if (location === "local") throw new HttpError(400, "Claude's cloud can't use a local model.");
   }
   const title = j.title ?? j.prompt.split("\n")[0]!.slice(0, 80);
   return sql.begin(async (tx) => {
@@ -105,6 +112,8 @@ export function jobRow(r: any) {
     runner: (r.runner ?? "direct") as string,
     /** For a Cloudroom job: its Cloudroom thread, and the branch it pushes to. */
     cloudroom: r.runner === "cloudroom" ? { thread: (r.provider_session_id as string | null) ?? null, branch: `opnav/${String(r.id).slice(0, 8)}` } : null,
+    /** For a Claude cloud job: its latest cloud session (claude.ai/code/<session>). Each turn pushes to claude/opnav-<job>-<turn>. */
+    claudeCloud: r.runner === "claude-cloud" ? { session: (r.provider_session_id as string | null) ?? null } : null,
     status: r.status as string,
     machineId: r.node_id as string | null,
     /** The machine that has (or last had) it, by name. */
@@ -145,10 +154,11 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
       from turns t join jobs j on j.id = t.job_id join tree_nodes p on p.id = j.project_id
       where t.status = 'queued' and j.user_id = ${userId} and j.status = 'queued' and not j.cancel_requested
         and ((j.runner = 'direct' and j.provider in ${tx(req.providers.length ? req.providers : ["-"])})
-          or (j.runner = 'cloudroom' and j.provider in ${tx(req.cloudroomProviders.length ? req.cloudroomProviders : ["-"])}))
+          or (j.runner = 'cloudroom' and j.provider in ${tx(req.cloudroomProviders.length ? req.cloudroomProviders : ["-"])})
+          or (j.runner = 'claude-cloud' and j.provider = 'claude' and ${req.claudeCloud}))
         and p.repo_remote in ${tx(remotes)}
         and (j.node_id is null or j.node_id = ${machineId})
-        and (j.runner = 'cloudroom' or j.needs <@ ${tx.json(machine.tools ?? [])}::jsonb)
+        and (j.runner <> 'direct' or j.needs <@ ${tx.json(machine.tools ?? [])}::jsonb)
       order by t.created_at
       limit ${free}
       for update of t, j skip locked`;

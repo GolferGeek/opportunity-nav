@@ -19,7 +19,7 @@ export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onCl
       {!job ? <p className="muted">Loading…</p> : (
         <>
           <div className="facts muted">
-            <span className={`dot ${job.status}`} /> {job.status} · {providerName(job.provider)}{job.model ? ` · ${job.model}` : ""} · {job.cloudroom ? "in Cloudroom's cloud" : job.location}{job.machine ? ` · ${job.cloudroom ? "handed over by" : "on"} ${job.machine}` : ""}
+            <span className={`dot ${job.status}`} /> {job.status} · {providerName(job.provider)}{job.model ? ` · ${job.model}` : ""} · {job.cloudroom ? "in Cloudroom's cloud" : job.claudeCloud ? "in Claude's cloud" : job.location}{job.machine ? ` · ${job.cloudroom || job.claudeCloud ? "handed over by" : "on"} ${job.machine}` : ""}
             {job.needs?.length ? ` · needs ${needsText(job.needs)}` : ""}
             {job.tokens && (job.tokens.input || job.tokens.output) ? ` · ${(job.tokens.input + job.tokens.output).toLocaleString()} tokens` : ""}
             {job.costUsd ? ` · $${job.costUsd.toFixed(2)}` : ""} · started by {job.createdBy} {ago(job.createdAt)}
@@ -28,6 +28,13 @@ export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onCl
             <div className="muted small">
               Runs in a Cloudroom sandbox from the repo's default branch on GitHub. Its work is pushed to <code>{job.cloudroom.branch}</code>.
               {job.cloudroom.thread ? <> Open thread <code>{job.cloudroom.thread}</code> in the Cloudroom app to see everything.</> : ""}
+            </div>
+          )}
+          {job.claudeCloud && (
+            <div className="muted small">
+              Runs in Claude's cloud through your Claude Code routine, from the checkout's branch on GitHub.
+              Its work comes back on a <code>claude/opnav-…</code> branch.
+              {job.claudeCloud.session ? <> See the session at <a href={`https://claude.ai/code/${encodeURIComponent(job.claudeCloud.session)}`} target="_blank" rel="noreferrer">claude.ai/code</a>.</> : ""}
             </div>
           )}
           {job.summary && (<><h4>{job.status === "failed" ? "What went wrong" : "Result"}</h4><pre className="prompt">{job.summary}</pre></>)}

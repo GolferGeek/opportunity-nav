@@ -40,6 +40,7 @@ export function Settings({ onClose, onError }: { onClose: () => void; onError: (
               {runsJobs(m) || "No agents signed in"}
               {m.checkouts.length ? ` · ${m.checkouts.length} repos` : ""}{m.handoff ? " · handoff watcher" : ""}
               {m.cloudroom ? ` · Cloudroom (${m.cloudroom.providers.map((p: string) => providerName(p)).join(", ") || "no agents connected"})` : ""}
+              {m.claudeCloud?.ready ? " · Claude's cloud" : ""}
               {m.autonomy === "full" ? " · workers run without a sandbox" : ""}
               {m.tools?.length ? ` · has ${needsText(m.tools)}` : ""}
             </div>

@@ -108,28 +108,34 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
   const [provider, setProvider] = useState(node.defaultProvider ?? "claude");
   const [model, setModel] = useState(node.defaultModel ?? "");
   const [location, setLocation] = useState(node.defaultLocation ?? "");
-  const [runner, setRunner] = useState<"direct" | "cloudroom">("direct");
+  const [runner, setRunner] = useState<"direct" | "cloudroom" | "claude-cloud">("direct");
   const [needs, setNeeds] = useState<Need[]>(node.defaultNeeds ?? []);
   const localModels = LOCAL_MODEL_PROVIDERS.includes(provider);
   useEffect(() => { if (!localModels && location === "local") setLocation(""); }, [localModels, location]);
   const [busy, setBusy] = useState(false);
   // Machines that can hand jobs to Cloudroom, and which agents they can run there.
   const [cloudroom, setCloudroom] = useState<string[]>([]);
+  // Whether an online machine has its Claude Code routine set up, for Claude in Claude's cloud.
+  const [claudeCloud, setClaudeCloud] = useState(false);
   useEffect(() => {
     let live = true;
     void api<any[]>("GET", "/api/machines").then((ms) => {
-      if (live) setCloudroom([...new Set(ms.filter((m) => m.online && m.cloudroom).flatMap((m) => m.cloudroom.providers as string[]))]);
+      if (!live) return;
+      setCloudroom([...new Set(ms.filter((m) => m.online && m.cloudroom).flatMap((m) => m.cloudroom.providers as string[]))]);
+      setClaudeCloud(ms.some((m) => m.online && m.claudeCloud?.ready));
     }).catch(() => {});
     return () => { live = false; };
   }, []);
-  useEffect(() => { if (!cloudroom.includes(provider)) setRunner("direct"); }, [provider, cloudroom]);
-  const inCloudroom = runner === "cloudroom";
+  useEffect(() => {
+    if (runner === "cloudroom" && !cloudroom.includes(provider) || runner === "claude-cloud" && provider !== "claude") setRunner("direct");
+  }, [provider, cloudroom, runner]);
+  const inCloud = runner !== "direct";
   const go = async () => {
     if (!prompt.trim()) return;
     setBusy(true);
     try {
       const j = await api("POST", "/api/jobs", { nodeId: node.id, prompt, provider, model: model || undefined,
-        location: inCloudroom ? "cloud" : location || undefined, runner, needs });
+        location: inCloud ? "cloud" : location || undefined, runner, needs });
       onStarted(j.id);
     } catch (e) {
       onError((e as Error).message);
@@ -146,21 +152,22 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
           {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model (default)" aria-label="Model" />
-        {!inCloudroom && (
+        {!inCloud && (
           <select value={location} onChange={(e) => setLocation(e.target.value)} aria-label="Model location">
             <option value="">Default</option>
             <option value="cloud">Cloud model</option>
             {localModels && <option value="local">Local model</option>}
           </select>
         )}
-        {cloudroom.length > 0 && (
-          <select value={runner} onChange={(e) => setRunner(e.target.value as "direct" | "cloudroom")} aria-label="Where it runs"
-            title="Cloudroom runs it in its own cloud sandbox, starting from the repo on GitHub, and pushes the work to a branch.">
+        {(cloudroom.length > 0 || claudeCloud) && (
+          <select value={runner} onChange={(e) => setRunner(e.target.value as typeof runner)} aria-label="Where it runs"
+            title="A cloud runs it in its own sandbox, starting from the repo on GitHub, and pushes the work to a branch.">
             <option value="direct">On my machine</option>
-            <option value="cloudroom" disabled={!cloudroom.includes(provider)}>In Cloudroom's cloud{cloudroom.includes(provider) ? "" : " (not for this agent)"}</option>
+            {cloudroom.length > 0 && <option value="cloudroom" disabled={!cloudroom.includes(provider)}>In Cloudroom's cloud{cloudroom.includes(provider) ? "" : " (not for this agent)"}</option>}
+            {claudeCloud && <option value="claude-cloud" disabled={provider !== "claude"}>In Claude's cloud{provider === "claude" ? "" : " (Claude only)"}</option>}
           </select>
         )}
-        {!inCloudroom && <span className="needs-pick muted" title="Only a machine that has these takes the job.">Needs <NeedsPicker value={needs} onChange={setNeeds} /></span>}
+        {!inCloud && <span className="needs-pick muted" title="Only a machine that has these takes the job.">Needs <NeedsPicker value={needs} onChange={setNeeds} /></span>}
         <span className="spacer" />
         <button type="submit" className="primary" disabled={busy || !prompt.trim()}>Start</button>
       </div>

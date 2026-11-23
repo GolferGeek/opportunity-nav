@@ -227,6 +227,29 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal(done.cloudroom.thread, "thr_test1");
   });
 
+  test("Claude cloud jobs are Claude only and go only to a machine whose routine is set up", async () => {
+    const bad = await call(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "x", provider: "codex", runner: "claude-cloud" });
+    assert.equal(bad.status, 400);
+    const job = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Try it in Claude's cloud", runner: "claude-cloud", push: true });
+    assert.equal(job.runner, "claude-cloud");
+    assert.deepEqual(job.claudeCloud, { session: null });
+    await ok(node, "POST", "/api/node/heartbeat", { ...hb("laptop"), claudeCloud: { ready: false, reason: "not set up" } });
+    assert.equal((await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"], cloudroomProviders: ["claude"] })).turns.length, 0);
+    const machines = await ok(ui, "GET", "/api/machines");
+    assert.deepEqual(machines.find((m: any) => m.name === "laptop").claudeCloud, { ready: false, reason: "not set up" });
+    await ok(node2, "POST", "/api/node/heartbeat", { ...hb("studio"), claudeCloud: { ready: true } });
+    const [t] = (await ok(node2, "POST", "/api/node/jobs/claim", { providers: [], claudeCloud: true })).turns;
+    assert.equal(t.job.id, job.id);
+    assert.equal(t.job.runner, "claude-cloud");
+    assert.equal(t.job.push, true);
+    await ok(node2, "POST", `/api/node/jobs/${job.id}/events`, { leaseId: t.leaseId, events: [
+      { seq: 0, at: now(), type: "session", providerSessionId: "session_test1" },
+      { seq: 1, at: now(), type: "result", summary: "Done in the cloud." }] });
+    const done = await ok(ui, "GET", `/api/jobs/${job.id}`);
+    assert.equal(done.status, "succeeded");
+    assert.equal(done.claudeCloud.session, "session_test1");
+  });
+
   test("needs and location: a job that needs Docker or a database only goes to a machine that has them", async () => {
     // "local" means a model on the machine; Antigravity has none, so say so rather than queue a job that fails.
     const local = await call(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Review", provider: "agy", location: "local" });

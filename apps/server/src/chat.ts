@@ -46,6 +46,7 @@ function systemPrompt(cfg: ChatConfig, scope: { id: string; path: string[] } | n
     "Grok Bot is Matt's CEO agent and knows a lot about his work. When something is better asked of it, or Matt says to ask it, use message_grok_bot with a clear, self-contained request. Its answer arrives later as changes in the tree, not in this chat.",
     "For real work on any other project (code, writing, research), start a job there rather than doing it yourself.",
     "A job can also run in Cloudroom's cloud (start_job with runner \"cloudroom\"; Claude, Codex or Antigravity). Use it when they ask for Cloudroom or the cloud sandbox. It starts from the repo's default branch on GitHub and pushes to a branch named opnav/<first 8 of the job id>.",
+    "Claude jobs can also run in Claude's own cloud (start_job with runner \"claude-cloud\"), on a machine whose Claude routine is set up (list_machines shows claudeCloud \"ready\"). Use it when they ask for Claude's cloud. It can take up to 45 minutes, and a run that never reports back only shows up as a timeout.",
     "Write plainly and briefly. One thought per line. No headers. Say what you did after you do it.",
   ].join("\n");
 }
