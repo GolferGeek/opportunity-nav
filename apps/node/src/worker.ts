@@ -40,7 +40,10 @@ export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbo
       ...(job.effort ? ["--effort", job.effort] : []), ...(resume ? ["--resume", resume] : [])];
   }
   if (job.provider === "agy") {
-    const permissions = autonomy === "full" ? ["--dangerously-skip-permissions"] : ["--mode", "accept-edits", "--sandbox"];
+    // Headless agy can't ask before running a command, so in edit mode it refused every one and ended with an
+    // empty answer. Let commands run, but only inside agy's own sandbox (terminal restrictions, no network).
+    const permissions = autonomy === "full" ? ["--dangerously-skip-permissions"]
+      : ["--mode", "accept-edits", "--sandbox", "--settings", JSON.stringify({ permissions: { allow: ["command(*)"] } })];
     return ["-p", "", "--input-format", "stream-json", "--output-format", "stream-json", ...permissions, ...model,
       ...(job.effort ? ["--effort", job.effort] : []), ...(resume ? ["--conversation", resume] : [])];
   }
@@ -63,6 +66,23 @@ export function terminal(text: string): Terminal {
     if (parsed.success) return { type: "needs_input", needsInput: parsed.data };
   }
   return { type: "result", summary: text };
+}
+
+/**
+ * Read agy's final result. agy says SUCCESS even when it stopped because a
+ * tool was refused and it never answered; that's a failure, not a result.
+ */
+export function agyOutcome(final: Record<string, unknown>): { failed: boolean; result?: string; failure?: string; blocked?: string } {
+  const result = typeof final.response === "string" ? final.response : undefined;
+  const denied = Array.isArray(final.denied_actions)
+    ? [...new Set(final.denied_actions.map(item => string(object(item).display_name) ?? string(object(item).action)).filter(Boolean))]
+    : [];
+  const blocked = denied.length ? `Antigravity could not get permission to run ${denied.join(", ")}.` : undefined;
+  if (final.status !== "SUCCESS") return { failed: true, result, failure: string(final.error ?? final.response), blocked };
+  if (!result?.trim()) {
+    return { failed: true, failure: blocked ?? "Antigravity stopped without an answer.", blocked };
+  }
+  return { failed: false, result, blocked };
 }
 
 export function errorEvent(details: string, crashed = false): Terminal {
@@ -200,9 +220,11 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
       }
       if (event.event === "result") {
         complete = true;
-        failed = final.status !== "SUCCESS";
-        result = typeof final.response === "string" ? final.response : undefined;
-        if (failed) failure = string(final.error ?? final.response) ?? failure;
+        const outcome = agyOutcome(final);
+        failed = outcome.failed;
+        result = outcome.result;
+        if (outcome.failure) failure = outcome.failure;
+        if (outcome.blocked) emit({ type: "blocked", text: outcome.blocked });
         usage(final.usage);
       }
       return;

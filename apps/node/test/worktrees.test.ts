@@ -7,7 +7,7 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import type { JobSpec } from "@opnav/shared";
 import { system } from "../src/system.ts";
-import { runWorker } from "../src/worker.ts";
+import { agyOutcome, runWorker, workerArgs } from "../src/worker.ts";
 import { openWorktree, pruneWorktrees } from "../src/worktrees.ts";
 import { git, initRepo } from "./fixtures/git.ts";
 
@@ -86,4 +86,21 @@ test("ends the turn with an error when it cannot create an isolated worktree", a
     type: "error", code: "other", message: "Could not prepare a separate Git worktree for this job.", retryable: false,
   });
   assert.equal(git(checkout, "status", "--porcelain"), "");
+});
+
+test("Antigravity in edit mode may run commands inside its sandbox, and an empty SUCCESS after a refusal is a failure", () => {
+  const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: new Date().toISOString(), kind: "start" as const,
+    job: { id: randomUUID(), projectId: randomUUID(), checkoutPath: "/tmp/x", title: "Review", prompt: "Review it",
+      provider: "agy" as const, runner: "direct" as const, location: "cloud" as const } };
+  const args = workerArgs(turn, "edit");
+  assert.ok(args.includes("--sandbox"));
+  assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]!), { permissions: { allow: ["command(*)"] } });
+  assert.ok(!workerArgs(turn, "full").includes("--settings"));
+
+  const refused = agyOutcome({ status: "SUCCESS", response: "", denied_actions: [{ action: "command", display_name: "Bash" }] });
+  assert.equal(refused.failed, true);
+  assert.equal(refused.blocked, "Antigravity could not get permission to run Bash.");
+  assert.equal(agyOutcome({ status: "SUCCESS", response: "" }).failed, true);
+  assert.deepEqual(agyOutcome({ status: "SUCCESS", response: "Looks good." }), { failed: false, result: "Looks good.", blocked: undefined });
+  assert.equal(agyOutcome({ status: "ERROR", error: "boom" }).failure, "boom");
 });
