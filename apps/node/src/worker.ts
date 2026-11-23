@@ -125,7 +125,10 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   if (turn.kind === "continue" && !turn.answer) throw new Error("Continue turn needs an answer");
   const args = workerArgs(turn, autonomy, claudeSandbox);
   const input = turn.kind === "continue" ? turn.answer!.text : turn.job.prompt;
-  const prompt = `${input}\n\n${needsInputInstruction}\nYour work is already on branch ${branch}. Commit there and do not push.\n`;
+  // Headless agy ends the whole turn the moment an edit is refused, so tell it where it may edit.
+  const where = turn.job.provider === "agy" && autonomy === "edit"
+    ? `You can only edit files inside ${cwd}; edits anywhere else are refused and end your turn. Do all your work, builds and fixes there.\n` : "";
+  const prompt = `${input}\n\n${needsInputInstruction}\nYour work is already on branch ${branch}. Commit there and do not push.\n${where}`;
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
   const group = sys.platform !== "win32";
   const proc = spawn(binary, args, { cwd, env: worktreeEnv(sys), detached: group,
