@@ -165,3 +165,74 @@ test("an Antigravity failure says why it failed instead of a generic error", asy
   assert.deepEqual((await run({ status: "ERROR", error: "Rate limit exceeded" })).outcome, { type: "error",
     code: "rate_limited", message: "The worker reached its usage limit.", retryable: true });
 });
+
+/** Run a fake worker that prints `lines` on stdout, `stderr` on stderr, then exits with `code`. */
+async function fakeRun(t: TestContext, provider: "claude" | "codex", lines: object[], stderr = "", code = 0) {
+  const { sys, home, job } = await fixture(t);
+  const worker = join(home, `fake-${provider}`);
+  const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
+  await writeFile(worker, ["#!/bin/sh", "cat > /dev/null",
+    ...lines.map(line => `printf '%s\\n' ${quote(JSON.stringify(line))}`),
+    ...(stderr ? [`printf '%s\\n' ${quote(stderr)} >&2`] : []), `exit ${code}`].join("\n") + "\n");
+  await chmod(worker, 0o755);
+  const events: unknown[] = [];
+  const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const,
+    job: { ...job, id: randomUUID(), provider } };
+  return { outcome: await runWorker(sys, worker, turn, new AbortController().signal, event => events.push(event)), events };
+}
+
+const providerError = (message: string) => ({ type: "error", code: "provider_error", message, retryable: false });
+const crashed = (message: string) => ({ type: "error", code: "worker_crashed", message, retryable: false });
+
+test("a Claude failure says why it failed instead of a generic error", async t => {
+  const result = (fields: object) => ({ type: "result", session_id: "s1", ...fields });
+  assert.deepEqual((await fakeRun(t, "claude", [result({ subtype: "success", is_error: true,
+    result: "API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Overloaded\"}}" })], "", 1)).outcome,
+    providerError("API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Overloaded\"}}"));
+  assert.deepEqual((await fakeRun(t, "claude", [result({ subtype: "error_max_turns", is_error: true })], "", 1)).outcome,
+    providerError("Claude reached its turn limit before finishing."));
+  assert.deepEqual((await fakeRun(t, "claude", [result({ subtype: "error_during_execution", is_error: true,
+    errors: ["Tool use was interrupted"] })], "", 1)).outcome, providerError("Tool use was interrupted"));
+  const refused = await fakeRun(t, "claude", [result({ subtype: "error_during_execution", is_error: true,
+    permission_denials: [{ tool_name: "Bash" }] })], "", 1);
+  assert.ok(refused.events.some(event => JSON.stringify(event).includes("Claude could not get permission to run Bash.")));
+  assert.deepEqual(refused.outcome, providerError("Claude could not get permission to run Bash."));
+  // No result at all: how the process ended, with stderr's last useful line.
+  assert.deepEqual((await fakeRun(t, "claude", [], "Starting\nError: Invalid model name: claude-nope\nbye", 1)).outcome,
+    crashed("Claude exited with code 1: Error: Invalid model name: claude-nope"));
+  assert.deepEqual((await fakeRun(t, "claude", [], "", 0)).outcome,
+    { type: "error", code: "worker_crashed", message: "Claude stopped before finishing.", retryable: false });
+  // Known causes keep their own plain message.
+  assert.deepEqual((await fakeRun(t, "claude", [result({ is_error: true, result: "Invalid API key · Please run /login" })], "", 1)).outcome,
+    { type: "error", code: "auth_required", message: "Sign in to the worker and try again.", retryable: false });
+  assert.deepEqual((await fakeRun(t, "claude", [result({ is_error: true, result: "Claude AI usage limit reached|1700000000" })], "", 1)).outcome,
+    { type: "error", code: "rate_limited", message: "The worker reached its usage limit.", retryable: true });
+});
+
+test("a Codex failure says why it failed instead of a generic error", async t => {
+  const started = { type: "thread.started", thread_id: "t1" };
+  const wrapped = JSON.stringify({ type: "error", status: 400,
+    error: { type: "invalid_request_error", message: "The 'gpt-nope' model is not supported when using Codex with a ChatGPT account." } });
+  assert.deepEqual((await fakeRun(t, "codex", [started, { type: "error", message: wrapped },
+    { type: "turn.failed", error: { message: wrapped } }], "", 1)).outcome,
+    providerError("The 'gpt-nope' model is not supported when using Codex with a ChatGPT account."));
+  assert.deepEqual((await fakeRun(t, "codex", [started,
+    { type: "turn.failed", error: { message: "stream disconnected before completion: error sending request" } }], "", 1)).outcome,
+    providerError("stream disconnected before completion: error sending request"));
+  // A lone error event and a nonzero exit.
+  assert.deepEqual((await fakeRun(t, "codex", [started, { type: "error", message: "Sandbox denied: could not start seatbelt" }], "", 1)).outcome,
+    crashed("Codex exited with code 1: Sandbox denied: could not start seatbelt"));
+  assert.deepEqual((await fakeRun(t, "codex", [], "Error: unexpected argument '--nope' found", 2)).outcome,
+    crashed("Codex exited with code 2: Error: unexpected argument '--nope' found"));
+  // Known causes keep their own plain message.
+  assert.deepEqual((await fakeRun(t, "codex", [started, { type: "turn.failed",
+    error: { message: "You've hit your usage limit. Try again later." } }], "", 1)).outcome,
+    { type: "error", code: "rate_limited", message: "The worker reached its usage limit.", retryable: true });
+});
+
+test("a worker that can't start says so", async t => {
+  const { sys, home, job } = await fixture(t);
+  const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const, job };
+  assert.deepEqual(await runWorker(sys, join(home, "missing-claude"), turn, new AbortController().signal, () => {}),
+    { type: "error", code: "worker_crashed", message: "Claude could not start (ENOENT).", retryable: false });
+});

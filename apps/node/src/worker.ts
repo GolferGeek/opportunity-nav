@@ -88,6 +88,43 @@ export function agyOutcome(final: Record<string, unknown>): { failed: boolean; r
   return { failed: false, result, blocked };
 }
 
+const claudeSubtypes: Partial<Record<string, string>> = {
+  error_max_turns: "Claude reached its turn limit before finishing.",
+  error_max_budget_usd: "Claude reached its spending limit for this turn.",
+  error_during_execution: "Claude hit an error while working.",
+};
+
+/** Claude's final result: whether it failed, and why in plain words. */
+export function claudeOutcome(event: Record<string, unknown>): { failed: boolean; result?: string; failure?: string; reason?: string; blocked?: string } {
+  const subtype = string(event.subtype);
+  const failed = event.is_error === true || (subtype !== undefined && subtype !== "success");
+  const result = typeof event.result === "string" ? event.result : undefined;
+  const tools = Array.isArray(event.permission_denials)
+    ? [...new Set(event.permission_denials.map(item => string(object(item).tool_name)).filter(Boolean))] : [];
+  const blocked = Array.isArray(event.permission_denials) && event.permission_denials.length
+    ? tools.length ? `Claude could not get permission to run ${tools.join(", ")}.` : "Claude could not get permission to run a tool."
+    : undefined;
+  if (!failed) return { failed, result, blocked };
+  const errors = Array.isArray(event.errors) ? event.errors.filter(item => typeof item === "string") : [];
+  const failure = [result, ...errors].filter(Boolean).join(" ");
+  const reason = shortText(failure) ?? blocked ?? (subtype && claudeSubtypes[subtype]) ?? "Claude stopped with an error.";
+  return { failed, result, failure, reason, blocked };
+}
+
+/** Codex sometimes wraps the API's error as JSON inside the message; pull out the readable part. */
+export function codexReason(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  const inner = parse(message.slice(message.indexOf("{")));
+  const nested = message.includes("{") ? string(object(inner.error).message) ?? string(inner.message) ?? string(inner.detail) : undefined;
+  return shortText(nested ?? message);
+}
+
+/** The last stderr line worth showing: the last one that mentions an error, else the last nonempty one. */
+export function stderrReason(stderr: string): string | undefined {
+  const lines = stderr.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  return shortText(lines.findLast(line => /error|fail|denied|refused|not found|invalid/i.test(line)) ?? lines.at(-1));
+}
+
 /** `reason` is a plain sentence saying why the worker failed, shown instead of the generic message. */
 export function errorEvent(details: string, crashed = false, reason?: string): Terminal {
   if (/unauthorized|not logged in|authentication|auth required|invalid api key|please log in/i.test(details)) {
@@ -168,8 +205,13 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   let failed = false;
   let reason: string | undefined;
   let crashed = false;
+  let startError: string | undefined;
   let complete = false;
-  proc.on("error", () => { crashed = true; });
+  const agent = agentNames[turn.job.provider] ?? "The agent";
+  proc.on("error", (error: NodeJS.ErrnoException) => {
+    crashed = true;
+    startError ??= `${agent} could not start${error.code ? ` (${error.code})` : ""}.`;
+  });
   proc.stdin.on("error", () => {});
   proc.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-8192); });
   const lines = createInterface({ input: proc.stdout });
@@ -251,13 +293,12 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
       progress(claudeActivity(event));
       if (event.type === "result") {
         complete = true;
-        failed = event.is_error === true || (typeof event.subtype === "string" && event.subtype !== "success");
-        result = typeof event.result === "string" ? event.result : undefined;
-        if (failed) failure = [result, ...(Array.isArray(event.errors) ? event.errors.filter(item => typeof item === "string") : [])].join(" ");
-        if (Array.isArray(event.permission_denials) && event.permission_denials.length) {
-          const tools = [...new Set(event.permission_denials.map(item => string(object(item).tool_name)).filter(Boolean))];
-          emit({ type: "blocked", text: tools.length ? `Claude could not get permission to run ${tools.join(", ")}.` : "Claude could not get permission to run a tool." });
-        }
+        const outcome = claudeOutcome(event);
+        failed = outcome.failed;
+        result = outcome.result;
+        if (outcome.failure !== undefined) failure = outcome.failure;
+        if (outcome.reason) reason = outcome.reason;
+        if (outcome.blocked) emit({ type: "blocked", text: outcome.blocked });
         usage(event.usage, event.total_cost_usd);
       }
       return;
@@ -270,6 +311,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
     if (event.type === "turn.failed") {
       failed = true;
       failure = string(object(event.error).message) ?? failure;
+      reason = codexReason(failure) ?? "Codex stopped with an error.";
     }
     if (event.type === "error") failure = string(event.message) ?? failure;
     const item = object(event.item);
@@ -281,13 +323,21 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   proc.stdin.end(turn.job.provider === "agy"
     ? JSON.stringify({ event: "user", message: { role: "user", content: prompt } }) + "\n"
     : prompt);
-  const exit = await new Promise<number | null>(resolve => proc.once("close", resolve));
+  const [exit, exitSignal] = await new Promise<[number | null, NodeJS.Signals | null]>(resolve =>
+    proc.once("close", (code, name) => resolve([code, name])));
   if (signal.aborted) kill(true);
   clearTimeout(killTimer);
   clearTimeout(progressTimer);
   signal.removeEventListener("abort", abort);
   lines.close();
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
-  if (exit !== 0 || failed || !complete) return errorEvent(`${failure}\n${stderr}`, crashed || !complete && !failed, reason);
+  if (exit !== 0 || failed || !complete) {
+    // No reason from the stream: say how the process ended, with stderr's last useful line.
+    const detail = stderrReason(stderr) ?? codexReason(failure);
+    const ended = exitSignal ? `${agent} was stopped (${exitSignal})` : exit !== 0 && exit !== null ? `${agent} exited with code ${exit}`
+      : `${agent} stopped before finishing`;
+    reason ??= startError ?? (detail ? `${ended}: ${detail}` : `${ended}.`);
+    return errorEvent(`${failure}\n${stderr}`, crashed || !complete && !failed, reason);
+  }
   return terminal(result ?? "");
 }
