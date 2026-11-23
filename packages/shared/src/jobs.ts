@@ -44,6 +44,13 @@ export const JobSpec = z.object({
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   /** Checkout to run in. Set by the server from the project's remote and the node's checkouts. */
   checkoutPath: z.string(),
+  /**
+   * The project's repo, as the server knows it (normalised, e.g. github.com/owner/repo).
+   * The node runs the job only if the checkout's origin really is this repo, after any
+   * insteadOf / pushInsteadOf rewrite, and a pushing job publishes only there.
+   * Omitted by older servers: then a pushing job keeps its work on this machine.
+   */
+  remote: z.string().optional(),
   /** Pin to a node (always set for continue turns). */
   nodeId: z.string().uuid().optional(),
   /** Source issue, if the job came from one. */
