@@ -73,6 +73,7 @@ A job started with `push` (a handoff brief with `push: true` does this) lands it
 - Its worktree starts from the checkout's branch on origin, e.g. `main`.
 - When it succeeds, the helper pushes it there. If origin moved on, it rebases first.
 - If that conflicts or the push is refused, it pushes `opnav/<id>` instead, and the job's last progress line says so.
+- It pushes only that one branch: never tags, never a submodule's commits, whatever the machine's Git settings say.
 
 A job runs only in a checkout whose origin is the project's repo, as Git will really reach it (after any `insteadOf` or `pushInsteadOf` rewrite).
 If it isn't, the job ends at once and says why. A pushing job checks again right before it pushes, and fetches and pushes only the addresses it checked.

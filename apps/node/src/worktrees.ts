@@ -248,7 +248,7 @@ async function onBranch(sys: System, path: string, branch: string) {
 
 /** Fetch a branch from origin's checked address, never from whatever "origin" names by then. */
 function fetchBranch(sys: System, cwd: string, url: string, base: string, signal?: AbortSignal) {
-  return network(sys, cwd, signal, "fetch", "--quiet", "--no-tags", "--",
+  return network(sys, cwd, signal, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--",
     url, `+refs/heads/${base}:refs/remotes/origin/${base}`);
 }
 
@@ -387,8 +387,10 @@ export async function pushWork(sys: System, path: string,
     : await addressProblem(sys, path, repo!, fetchUrl!, pushUrl).catch(() => "could not read origin's address");
   if (problem) return `Not pushed: ${problem}. ${kept}`;
 
-  const push = (commit: string, target: string) =>
-    network(sys, path, signal, "push", "--quiet", "--", pushUrl!, `${commit}:refs/heads/${target}`);
+  // Only the job's commit, to one branch: no tags (whatever push.followTags says) and nothing in
+  // a submodule's repo (whatever push.recurseSubmodules or submodule.recurse say).
+  const push = (commit: string, target: string) => network(sys, path, signal, "push", "--quiet", "--no-follow-tags",
+    "--recurse-submodules=no", "--", pushUrl!, `${commit}:refs/heads/${target}`);
   const toBranch = async (why: string, commit: string) => {
     if (signal?.aborted) return `${why} ${cancelled}`;
     try {

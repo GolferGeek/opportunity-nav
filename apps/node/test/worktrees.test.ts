@@ -594,6 +594,45 @@ test("a job that pushes keeps its work here when the server didn't say which rep
   assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
 });
 
+test("a job that pushes publishes only its branch: no tags, whatever push.followTags says", async t => {
+  const { origin, checkout, run } = await pushFixture(t, () => [
+    "git add fix.txt && git commit --quiet -m 'Agent fix'",
+    "git tag -a v-local -m 'Local release'",
+  ]);
+  git(checkout, "config", "push.followTags", "true");
+  const { progress } = await run();
+  assert.match(progress.at(-1)!, /^Pushed to main as [a-f0-9]+\.$/);
+  assert.equal(git(origin, "log", "-1", "--format=%s", "main"), "Agent fix");
+  assert.equal(git(checkout, "tag", "--list"), "v-local", "the tag is on this machine");
+  assert.equal(git(origin, "tag", "--list"), "", "but not on origin");
+});
+
+test("a job that pushes never pushes a submodule's commits, whatever push.recurseSubmodules says", async t => {
+  const { home, origin, checkout, run } = await pushFixture(t, () => [
+    "git -c protocol.file.allow=always submodule update --quiet --init",
+    "git -C lib checkout --quiet -B main",
+    "echo change > lib/change.txt && git -C lib add change.txt && git -C lib commit --quiet -m 'Submodule change'",
+    "git add lib",
+  ]);
+  // The repo has a submodule, with its own origin.
+  const lib = join(home, "lib.git");
+  const seed = join(home, "lib-seed");
+  await mkdir(seed);
+  initRepo(seed);
+  git(home, "clone", "--quiet", "--bare", seed, lib);
+  git(checkout, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", lib, "lib");
+  git(checkout, "commit", "--quiet", "-m", "Add lib");
+  git(checkout, "push", "--quiet", "origin", "main");
+  git(checkout, "config", "push.recurseSubmodules", "on-demand");
+  git(checkout, "config", "protocol.file.allow", "always");
+  const libBefore = git(lib, "rev-parse", "main");
+  const { progress } = await run();
+  assert.match(progress.at(-1)!, /^Pushed to main as [a-f0-9]+\.$/);
+  assert.equal(git(origin, "show", "--name-only", "--format=", "main"), "fix.txt\nlib");
+  assert.equal(git(lib, "rev-parse", "main"), libBefore, "the submodule's origin is untouched");
+  assert.equal(git(lib, "for-each-ref", "--format=%(refname)").split("\n").length, 1);
+});
+
 test("a checkout reports origin's address as Git will really use it", async t => {
   const { home, checkout } = await fixture(t);
   git(checkout, "remote", "add", "origin", "gh:Team/repo");
