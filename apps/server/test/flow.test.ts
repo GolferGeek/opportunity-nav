@@ -351,6 +351,7 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await call(node, "POST", "/a2a", {})).status, 403);
     const ms = (await rpc({ action: "list_machines", input: {} })).result.parts[0].data.result;
     assert.deepEqual(ms.find((m: any) => m.name === "studio").tools, ["docker", "database"]);
+    assert.equal(ms.find((m: any) => m.name === "studio").helperVersion, "0.1.0");
     const pinned = (await rpc({ action: "start_job", input: { item: "golfer geek / opportunity nav", prompt: "On the studio", machine: "Studio" } })).result.parts[0].data.result;
     const [row] = await sql`select n.name from jobs j join nodes n on n.id = j.node_id where j.id = ${pinned.id}`;
     assert.equal(row!.name, "studio");

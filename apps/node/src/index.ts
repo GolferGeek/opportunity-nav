@@ -15,8 +15,7 @@ import { ollamaModels, runOllama } from "./ollama.ts";
 import { runWorker } from "./worker.ts";
 import type { Autonomy } from "./worker.ts";
 import { createUsageCollector } from "./usage/index.ts";
-
-const version = "0.1.0";
+import { helperVersion } from "./version.ts";
 
 export interface StartNodeOptions {
   serverUrl: string;
@@ -53,6 +52,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   });
   const collect = createUsageCollector({ sys, fetch: transport, signal });
   const detectCloudroom = cloudroomDetector(sys);
+  const version = helperVersion(sys);
   let time = { heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC, usageIntervalSec: DEFAULT_USAGE_INTERVAL_SEC };
   let registered = false;
   // "Check now" from the dashboard wakes the usage loop early.
@@ -96,7 +96,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
         provider: "ollama", canRunJobs: true, signedIn: true, locations: ["local"], models,
       });
       const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
-        arch: arch(), autonomy, helperVersion: version, providers: detected, checkouts: discovered,
+        arch: arch(), autonomy, helperVersion: await version, providers: detected, checkouts: discovered,
         cloudroom: cloudroom && { providers: cloudroom.providers }, tools,
         handoff: handoff ? { dir: handoff } : undefined, activeJobIds: activeJobId ? [activeJobId] : [] });
       const answer = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));

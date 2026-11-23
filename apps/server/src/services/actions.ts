@@ -107,7 +107,7 @@ export const actions = {
         .sort((a, b) => new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime())
         .filter((m) => !seen.has(m.name.toLowerCase()) && seen.add(m.name.toLowerCase()))
         .map((m) => ({
-          name: m.name, online: m.online, lastSeenAt: m.lastSeenAt,
+          name: m.name, online: m.online, lastSeenAt: m.lastSeenAt, helperVersion: m.helperVersion,
           runsJobsWith: (m.providers as any[]).filter((p) => p.canRunJobs && p.signedIn).map((p) => p.provider),
           tools: m.tools, cloudroom: m.cloudroom?.providers ?? [],
         }));

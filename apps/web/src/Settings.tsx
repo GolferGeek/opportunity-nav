@@ -27,7 +27,7 @@ export function Settings({ onClose, onError }: { onClose: () => void; onError: (
       <ul className="machines">
         {machines.data?.map((m) => (
           <li key={m.id} className="card">
-            <div><span className={`dot ${m.online ? "running" : "offline"}`} /> <strong>{m.name}</strong> <span className="muted">{m.platform} · seen {ago(m.lastSeenAt)}</span></div>
+            <div><span className={`dot ${m.online ? "running" : "offline"}`} /> <strong>{m.name}</strong> <span className="muted">{m.platform} · helper {m.helperVersion} · seen {ago(m.lastSeenAt)}</span></div>
             <div className="muted">
               {runsJobs(m) || "No agents signed in"}
               {m.checkouts.length ? ` · ${m.checkouts.length} repos` : ""}{m.handoff ? " · handoff watcher" : ""}

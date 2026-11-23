@@ -216,6 +216,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
       if (req.url === NODE.heartbeat) {
         const heartbeat = NodeHeartbeat.parse(body);
         assert.equal(heartbeat.autonomy, "edit");
+        assert.match(heartbeat.helperVersion, /^0\.1\.0(\+[0-9a-f]{7,40}(\.dirty)?)?$/);
         assert.deepEqual(heartbeat.cloudroom, { providers: ["claude", "codex", "agy"] });
         assert.deepEqual(heartbeat.providers.find(value => value.provider === "ollama")?.models, ["fixture:latest"]);
         assert.ok(heartbeat.providers.some(value => value.provider === "claude" && value.canRunJobs && value.signedIn));
