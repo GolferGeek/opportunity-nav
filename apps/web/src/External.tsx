@@ -1,10 +1,16 @@
 import { useEffect, useRef } from "react";
 import { ago, usePoll } from "./api.ts";
+import { ProjectLabel } from "./ProjectLabel.tsx";
 
 const SOURCE: Record<string, string> = { handoff: "Handoff task", github_issue: "Issue", cursor_agent: "Cloud agent" };
 
 /** Live view of work the app didn't start (a handoff task, an issue, a cloud agent). */
-export function ExternalPanel({ id, onClose }: { id: string; onClose: () => void }) {
+export function ExternalPanel({ id, onClose, pathOf, onSelect }: {
+  id: string;
+  onClose: () => void;
+  pathOf: (projectId: string) => string[];
+  onSelect: (id: string) => void;
+}) {
   const { data: w, error } = usePoll<any>(`/api/external/${id}`, 3000);
   const live = w && ["queued", "running", "waiting"].includes(w.status);
   const activity: { at?: string; text: string }[] = w?.detail?.activity ?? [];
@@ -23,6 +29,7 @@ export function ExternalPanel({ id, onClose }: { id: string; onClose: () => void
             {w.machine ? ` · ${w.machine}` : ""}{w.startedAt ? ` · started ${ago(w.startedAt)}` : ""} · updated {ago(w.updatedAt)}
             {w.url && <a href={w.url} target="_blank" rel="noreferrer">Open</a>}
           </div>
+          {w.source === "handoff" && w.projectId && <ProjectLabel projectId={w.projectId} path={pathOf(w.projectId)} onSelect={onSelect} />}
           {w.repo && <div className="muted small">{w.repo}</div>}
           {w.summary && (<><h4>Summary</h4><p className="plain">{w.summary}</p></>)}
           {w.questions.length > 0 && (

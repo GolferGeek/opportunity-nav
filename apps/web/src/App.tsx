@@ -63,12 +63,13 @@ function Home() {
 
   const byId = useMemo(() => new Map((tree.data ?? []).map((n) => [n.id, n])), [tree.data]);
   const node = selected ? byId.get(selected) : undefined;
-  const path = useMemo(() => {
+  const pathOf = useCallback((id: string) => {
     const out: string[] = [];
-    let cur = node;
+    let cur = byId.get(id);
     while (cur) { out.unshift(cur.title); cur = cur.parentId ? byId.get(cur.parentId) : undefined; }
     return out;
-  }, [node, byId]);
+  }, [byId]);
+  const path = useMemo(() => (node ? pathOf(node.id) : []), [node, pathOf]);
   const refresh = useCallback(() => { void tree.reload(); void happening.reload(); void dash.reload(); }, [tree.reload, happening.reload, dash.reload]);
 
   if (tree.error && /sign in/i.test(tree.error)) return <SignedOut expired />;
@@ -91,7 +92,7 @@ function Home() {
       {claude && <ClaudePanel scope={node ? { id: node.id, path } : null} onClose={() => setClaude(false)} onChanged={refresh}
         pending={pendingAsk} onPendingTaken={() => setPendingAsk(null)} />}
       {job && <JobPanel id={job} onClose={() => setJob(null)} onChanged={refresh} onError={setToast} />}
-      {external && <ExternalPanel id={external} onClose={() => setExternal(null)} />}
+      {external && <ExternalPanel id={external} onClose={() => setExternal(null)} pathOf={pathOf} onSelect={select} />}
       {sub && <SubscriptionPanel id={sub} onClose={() => setSub(null)} onChanged={refresh} onError={setToast} />}
       {settings && <Settings onClose={() => setSettings(false)} onError={setToast} />}
       {toast && <div className="toast" role="status" onClick={() => setToast(null)}>{toast}</div>}

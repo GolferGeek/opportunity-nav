@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ago, api, providerName } from "./api.ts";
+import { ProjectLabel } from "./ProjectLabel.tsx";
 
 export interface Item {
   kind: "question" | "roadblock" | "job" | "external";
@@ -44,7 +45,7 @@ export function Happening({ groups, onChanged, onOpenJob, onOpenExternal, onSele
             {g.projectId ? <button className="link" onClick={() => onSelect(g.projectId!)}>{g.path.join(" / ")}</button> : g.path.join(" / ")}
           </h4>
           {g.items.map((it) => (
-            <Card key={`${it.kind}-${it.id}`} it={it} onChanged={onChanged} onOpenJob={onOpenJob} onOpenExternal={onOpenExternal} onError={onError} />
+            <Card key={`${it.kind}-${it.id}`} it={it} group={g} onChanged={onChanged} onOpenJob={onOpenJob} onOpenExternal={onOpenExternal} onSelect={onSelect} onError={onError} />
           ))}
         </div>
       ))}
@@ -52,7 +53,7 @@ export function Happening({ groups, onChanged, onOpenJob, onOpenExternal, onSele
   );
 }
 
-function Card({ it, onChanged, onOpenJob, onOpenExternal, onError }: { it: Item; onChanged: () => void; onOpenJob: (id: string) => void; onOpenExternal: (id: string) => void; onError: (m: string) => void }) {
+function Card({ it, group, onChanged, onOpenJob, onOpenExternal, onSelect, onError }: { it: Item; group: Group; onChanged: () => void; onOpenJob: (id: string) => void; onOpenExternal: (id: string) => void; onSelect: (id: string) => void; onError: (m: string) => void }) {
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const run = async (fn: () => Promise<unknown>) => {
@@ -120,14 +121,23 @@ function Card({ it, onChanged, onOpenJob, onOpenExternal, onError }: { it: Item;
     );
 
   return (
-    <button className="card external clickable" onClick={() => onOpenExternal(it.id)}>
+    <div className="card external clickable" role="button" tabIndex={0}
+      onClick={() => onOpenExternal(it.id)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenExternal(it.id);
+        }
+      }}>
       <div className="tag">
         <span className={`dot ${it.status}`} /> {it.source === "handoff" ? "Handoff" : it.source === "github_issue" ? "Issue" : "Cloud agent"} · {it.status}
         {it.machine ? ` · ${it.machine}` : ""}
         {it.status === "running" && it.startedAt ? ` · started ${ago(it.startedAt)} · updated ${ago(it.at)}` : ` · ${ago(it.at)}`}
       </div>
       <div className="body">{it.title}</div>
+      {it.source === "handoff" && <ProjectLabel projectId={group.projectId} path={group.path} onSelect={onSelect} />}
       {it.detail && <div className="detail clip">{it.detail}</div>}
-    </button>
+    </div>
   );
 }
