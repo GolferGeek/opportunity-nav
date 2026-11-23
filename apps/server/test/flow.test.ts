@@ -353,6 +353,58 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     await ok(ui, "POST", `/api/jobs/${pinned.id}/cancel`);
   });
 
+  test("start_review: Antigravity or Codex, whichever has more usage left and can run", async () => {
+    const rpc = async (input: any) => (await ok(agent, "POST", "/a2a", { jsonrpc: "2.0", id: 1, method: "message/send",
+      params: { message: { role: "user", messageId: "m2", parts: [{ kind: "data", data: { action: "start_review", input } }] } } }));
+    const review = async (input: object = {}) => {
+      const r = await rpc({ item: "golfer geek / opportunity nav", prompt: "Review the branch", ...input });
+      if (r.error) return { error: r.error.message as string };
+      const job = r.result.parts[0].data.result;
+      await ok(ui, "POST", `/api/jobs/${job.id}/cancel`);
+      return job;
+    };
+    const can = (provider: string, canRunJobs = true) => ({ provider, signedIn: true, canRunJobs, locations: ["cloud"], models: [] });
+    await ok(node, "POST", "/api/node/heartbeat", { ...hb("laptop"), providers: [can("agy"), can("codex")] });
+    await ok(node2, "POST", "/api/node/heartbeat", { ...hb("studio"), providers: [can("codex")], tools: ["docker", "database"] });
+    await sql`update subscriptions set hidden = true where provider in ('agy', 'codex')`;
+    const week = new Date(Date.now() + 5 * 86400e3).toISOString();
+    const usage = (agyUsed: number, codex: object[]) => ok(node, "POST", "/api/node/usage", { observedAt: now(), accounts: [
+      { provider: "agy", accountKey: key("review-agy"), status: "ok", fetchedAt: now(),
+        windows: [{ id: "3p-weekly", label: "Weekly", kind: "weekly", unit: "percent", used: agyUsed, resetsAt: week }] },
+      { provider: "codex", accountKey: key("review-codex"), status: "ok", fetchedAt: now(), windows: codex }] });
+    const codexWeekly = (used: number, resetsAt = week) => [
+      { id: "codex:primary", label: "5-hour", kind: "session", unit: "percent", used: 10 },
+      { id: "codex:secondary", label: "Weekly", kind: "weekly", unit: "percent", used, resetsAt }];
+
+    await usage(30, codexWeekly(60));
+    let r = await review();
+    assert.equal(r.provider, "agy", "70% left beats Codex's tightest window, 40%");
+    assert.equal(r.picked.why, "Antigravity has 70% left. Codex has 40% left.");
+
+    await new Promise((res) => setTimeout(res, 5));
+    await usage(90, codexWeekly(60));
+    assert.equal((await review()).provider, "codex");
+
+    await new Promise((res) => setTimeout(res, 5));
+    await usage(90, codexWeekly(100, new Date(Date.now() - 1000).toISOString()));
+    assert.equal((await review()).picked.why, "Codex has 90% left. Antigravity has 10% left.", "a window past its reset is back to unused");
+
+    // Antigravity has more left but no machine can run it: Codex goes.
+    await new Promise((res) => setTimeout(res, 5));
+    await usage(10, codexWeekly(60));
+    await ok(node, "POST", "/api/node/heartbeat", { ...hb("laptop"), providers: [can("agy", false), can("codex")] });
+    r = await review();
+    assert.equal(r.provider, "codex");
+    assert.match(r.picked.why, /Antigravity can't run: no online machine can run it/);
+    await ok(node, "POST", "/api/node/heartbeat", { ...hb("laptop"), providers: [can("agy"), can("codex")] });
+
+    // Needs a database: only the studio has one, and it only runs Codex.
+    assert.equal((await review({ needs: ["database"] })).provider, "codex");
+    const none = await review({ among: ["agy"], needs: ["database"] });
+    assert.match(none.error, /No reviewer can run right now. Antigravity: no machine that runs it has database/);
+    await sql`update subscriptions set hidden = true where provider in ('agy', 'codex')`;
+  });
+
   test("MCP: lists the same tools", async () => {
     const r = await app.inject({
       method: "POST", url: "/mcp",

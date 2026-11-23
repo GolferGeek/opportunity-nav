@@ -3,7 +3,8 @@ import { Location, MachineTool, ProviderId, Runner } from "@opnav/shared";
 import type { Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { answerQuestion, cancelJob, createJob, getJob } from "./jobs.ts";
-import { createNode, listTree, pathOf, TreeNodePatch, updateNode, type TreeNode } from "./tree.ts";
+import { createNode, listTree, pathOf, projectOf, TreeNodePatch, updateNode, type TreeNode } from "./tree.ts";
+import { DEFAULT_REVIEWERS, pickReviewer } from "./reviewer.ts";
 import { listMachines } from "./machines.ts";
 import { dashboard, happening } from "./views.ts";
 import { messageGrokBot } from "./outbound.ts";
@@ -127,6 +128,32 @@ export const actions = {
       const { machine, ...job } = i;
       const machineId = machine ? await machineByName(sql, userId, machine) : undefined;
       return createJob(sql, userId, { ...job, nodeId: node.id, machineId }, by);
+    },
+  },
+  start_review: {
+    description: "Start a review job in a project, and let the agent be picked: of Antigravity and Codex (or the agents in among), the one with more subscription usage left goes, as long as a machine can run it now; otherwise the other one. The reply says which was picked and why. Otherwise like start_job.",
+    input: z.object({
+      item: Ref.describe("The project (or an item inside it) to review"),
+      prompt: z.string().min(1).describe("What to review and what to do with what it finds"),
+      title: z.string().optional(),
+      among: z.array(ProviderId).min(1).optional().describe("Agents to pick from, in order of preference on a tie. Default: agy, codex."),
+      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+      machine: z.string().optional().describe("Run it on this machine. Default: any machine that can."),
+      needs: z.array(MachineTool).optional().describe("What the machine must have: docker, database. Default: the project's."),
+    }),
+    run: async (sql: Sql, userId: string, i: any, by: string) => {
+      const node = await resolveRef(sql, userId, i.item);
+      const tree = await listTree(sql, userId);
+      const project = projectOf(new Map(tree.map((n) => [n.id, n])), node.id);
+      if (!project?.repoRemote) throw new HttpError(400, "Put this inside a project with a repo first, so the review knows which repo to read.");
+      const machineId = i.machine ? await machineByName(sql, userId, i.machine) : undefined;
+      const needs = [...new Set<string>(i.needs ?? project.defaultNeeds ?? [])];
+      const among = [...new Set<string>(i.among ?? DEFAULT_REVIEWERS)];
+      const picked = await pickReviewer(sql, userId, among, { remote: project.repoRemote, needs, machineId });
+      const job = await createJob(sql, userId, {
+        nodeId: node.id, prompt: i.prompt, title: i.title, provider: picked.provider as any, effort: i.effort, needs: needs as any, machineId,
+      }, by);
+      return { ...job, picked };
     },
   },
   get_job: {
