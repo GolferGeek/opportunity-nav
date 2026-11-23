@@ -27,3 +27,11 @@ If that fails, it pushes the job's branch `opnav/<id>` instead and says so.
 
 The watcher writes the report and STATUS line from the job's result.
 Questions show in Opportunity Nav, under What's happening.
+
+## Taking turns in a repo
+
+Jobs in the same repo take turns.
+A brief for a machine other than the Studio (`worker: omarchy`, `worker: cloudroom`), without `push: true`, only waits for that machine's jobs in the repo.
+It doesn't wait for the Studio, and the Studio doesn't wait for it.
+`push: true` and `worker: any` briefs wait for every job in the repo, on any machine.
+`worker: studio` takes turns with the Studio's own jobs.
