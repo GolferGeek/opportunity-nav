@@ -1,5 +1,6 @@
 import { ago, api, providerName, until, usePoll } from "./api.ts";
 import { CheckNow } from "./Dashboard.tsx";
+import { readingNote } from "./labels.ts";
 
 export function SubscriptionPanel({ id, onClose, onChanged, onError }: { id: string; onClose: () => void; onChanged: () => void; onError: (m: string) => void }) {
   const { data: s, reload } = usePoll<any>(`/api/subscriptions/${id}`, 15_000);
@@ -20,7 +21,7 @@ export function SubscriptionPanel({ id, onClose, onChanged, onError }: { id: str
             <span className="spacer" />
             <CheckNow newest={s.fetchedAt} onChanged={() => { reload(); onChanged(); }} onError={onError} />
           </div>
-          {s.status !== "ok" && <p className="sub-status">{s.message ?? s.status}</p>}
+          {readingNote(s) && <p className="sub-status">{readingNote(s)}</p>}
           <h4>Limits</h4>
           {limits.length === 0 && <p className="muted">No limits reported.</p>}
           <table className="limits">

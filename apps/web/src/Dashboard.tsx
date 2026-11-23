@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ago, api, providerName, until } from "./api.ts";
+import { readingClass, readingNote } from "./labels.ts";
 
 export interface Dash {
   totalMonthlyUsd: number;
@@ -11,18 +12,13 @@ export interface Dash {
     status: string;
     message: string | null;
     fetchedAt: string | null;
+    /** False when the last check failed, it needs a sign-in, or it's over 30 minutes old. */
+    current: boolean;
     monthlyCostUsd: number | null;
     windows: { id: string; label: string; unit: string; used: number; limit: number | null; percent: number | null; resetsAt: string | null; hasReset: boolean; kind: string }[];
   }[];
   projects: { id: string; path: string[]; priority: string; line: string; active: number; questions: number; roadblocks: number }[];
 }
-
-const STATUS_TEXT: Record<string, string> = {
-  stale: "Not current",
-  auth_required: "Sign in again",
-  unavailable: "No limits to show",
-  error: "Couldn't check",
-};
 
 export function Dashboard({ dash, onChanged, onSelect, onOpenSub, onError }: { dash: Dash | null; onChanged: () => void; onSelect: (id: string) => void; onOpenSub: (id: string) => void; onError: (m: string) => void }) {
   if (!dash) return <section className="pane"><h2>Dashboard</h2><p className="muted">Loading…</p></section>;
@@ -39,7 +35,7 @@ export function Dashboard({ dash, onChanged, onSelect, onOpenSub, onError }: { d
       )}
       <div className="subs">
         {dash.subscriptions.map((s) => (
-          <div key={s.id} className={`card sub clickable status-${s.status}`} role="button" tabIndex={0}
+          <div key={s.id} className={`card sub clickable ${readingClass(s)}`} role="button" tabIndex={0}
             onClick={(e) => { if (!(e.target as HTMLElement).closest(".cost, .cost-input")) onOpenSub(s.id); }}
             onKeyDown={(e) => e.key === "Enter" && onOpenSub(s.id)}>
             <div className="sub-head">
@@ -47,11 +43,7 @@ export function Dashboard({ dash, onChanged, onSelect, onOpenSub, onError }: { d
               <span className="muted">{[s.plan, s.label].filter(Boolean).join(" · ")}</span>
               <Cost id={s.id} value={s.monthlyCostUsd} onChanged={onChanged} onError={onError} />
             </div>
-            {s.status !== "ok" && (
-              <div className="sub-status" title={s.message ?? undefined}>
-                {STATUS_TEXT[s.status] ?? s.status}{s.message ? `: ${s.message}` : ""}
-              </div>
-            )}
+            {readingNote(s) && <div className="sub-status" title={s.message ?? undefined}>{readingNote(s)}</div>}
             {s.windows.filter((w) => w.unit !== "tokens").map((w) => {
               const pct = w.percent == null ? null : Math.min(100, Math.max(0, w.percent));
               return (
