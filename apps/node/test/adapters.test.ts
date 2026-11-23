@@ -6,7 +6,15 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { createCipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { readUsage } from "../src/index.ts";
-import { keychainSecret, system } from "../src/system.ts";
+import { keychainSecret, searchPath, system } from "../src/system.ts";
+
+test("a helper started with launchd's bare PATH still looks where npm and Homebrew install CLIs", () => {
+  assert.equal(searchPath("/usr/bin:/bin:/usr/sbin:/sbin", "/Users/me", "darwin"),
+    "/usr/bin:/bin:/usr/sbin:/sbin:/Users/me/.local/bin:/Users/me/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin");
+  assert.equal(searchPath("/opt/homebrew/bin:/usr/bin", "/h", "linux"),
+    "/opt/homebrew/bin:/usr/bin:/h/.local/bin:/h/.npm-global/bin:/usr/local/bin:/bin", "keeps the person's order, adds only what's missing");
+  assert.equal(system({ env: { PATH: "/x" } }).env.PATH, "/x", "an explicit env is left alone");
+});
 
 function fixtureJwt(fields: object) {
   return "fixture." + Buffer.from(JSON.stringify(fields)).toString("base64url") + ".fixture";

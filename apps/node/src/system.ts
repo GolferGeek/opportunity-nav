@@ -14,7 +14,23 @@ export interface System {
 }
 
 export function system(overrides: Partial<System> = {}): System {
-  return { home: homedir(), env: process.env, platform: process.platform, ...overrides };
+  const home = overrides.home ?? homedir();
+  const platform = overrides.platform ?? process.platform;
+  const env = overrides.env ?? { ...process.env, PATH: searchPath(process.env.PATH, home, platform) };
+  return { home, env, platform };
+}
+
+/**
+ * Apps started from the Dock or Finder get launchd's bare PATH
+ * (/usr/bin:/bin:/usr/sbin:/sbin), so the desktop app's helper would miss
+ * CLIs installed with npm or Homebrew, and `#!/usr/bin/env node` scripts like
+ * codex couldn't find node. Append the usual install folders that are missing.
+ */
+export function searchPath(path: string | undefined, home: string, platform: NodeJS.Platform): string {
+  const parts = (path ?? "").split(delimiter).filter(Boolean);
+  if (platform === "win32") return parts.join(delimiter);
+  const extra = [join(home, ".local/bin"), join(home, ".npm-global/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+  return [...parts, ...extra.filter(dir => !parts.includes(dir))].join(delimiter);
 }
 
 export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
