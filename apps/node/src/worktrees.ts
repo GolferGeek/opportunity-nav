@@ -123,12 +123,27 @@ export async function openWorktree(sys: System, job: JobSpec) {
       if (!await registered(sys, checkout, path, branch)) throw new Error();
       await git(sys, checkout, "worktree", "lock", path);
     }
-    return { path, branch, async release() {
+    return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message), async release() {
       await git(sys, checkout, "worktree", "unlock", path).catch(() => {});
     } };
   } catch {
     throw new WorktreeError("Could not prepare a separate Git worktree for this job.");
   }
+}
+
+/**
+ * Commit whatever an agent left uncommitted in its worktree, and return the new commit.
+ * Agent sandboxes (agy --sandbox, Codex workspace-write, Claude's sandbox) can write the
+ * worktree but not its Git metadata, which lives in the main checkout's .git/worktrees/<id>,
+ * so their own `git commit` fails. The helper commits for them, outside the sandbox and with
+ * hooks off, so nothing the agent wrote runs unsandboxed.
+ */
+export async function commitLeftovers(sys: System, path: string, message: string): Promise<string | undefined> {
+  // A node_modules symlink into the main checkout isn't matched by a "node_modules/" ignore rule.
+  await git(sys, path, "add", "--all", "--", ".", ":(exclude,glob)**/node_modules", ":(exclude,glob)**/node_modules/**");
+  if (!(await git(sys, path, "diff", "--cached", "--name-only")).trim()) return undefined;
+  await git(sys, path, "commit", "--quiet", "--no-verify", "-m", message);
+  return (await git(sys, path, "rev-parse", "--short", "HEAD")).trim();
 }
 
 export async function pruneWorktrees(sys: System, now = Date.now()) {

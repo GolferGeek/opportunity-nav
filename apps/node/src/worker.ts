@@ -22,6 +22,8 @@ export const needsInputInstruction = [
 
 export type Autonomy = "edit" | "full";
 
+const agentNames: Partial<Record<string, string>> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
+
 export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbox = false): string[] {
   const { job, providerSessionId } = turn;
   if (turn.kind === "continue" && (!providerSessionId || providerSessionId.startsWith("-") || !turn.answer)) {
@@ -111,7 +113,15 @@ export async function runWorker(sys: System, binary: string, turn: Turn, signal:
     return { type: "error", code: "other", message: worktree.message, retryable: false };
   }
   try {
-    return await runInWorktree(sys, binary, turn, signal, emit, autonomy, worktree.path, worktree.branch);
+    const outcome = await runInWorktree(sys, binary, turn, signal, emit, autonomy, worktree.path, worktree.branch);
+    if (outcome.type !== "error" || outcome.code !== "cancelled") {
+      const agent = agentNames[turn.job.provider] ?? "The agent";
+      const title = turn.job.title.split("\n")[0]!.trim().slice(0, 72) || "Job work";
+      await worktree.commit(`${title}\n\n${agent} left these changes uncommitted (job ${turn.job.id.slice(0, 8)}); Opportunity Nav committed them.`)
+        .then(sha => { if (sha) emit({ type: "progress", text: `Committed the changes ${agent} left, as ${sha}.` }); },
+          () => emit({ type: "progress", text: `Could not commit the changes ${agent} left. They are still in the worktree.` }));
+    }
+    return outcome;
   } finally {
     await worktree.release();
   }
@@ -128,7 +138,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   // Headless agy ends the whole turn the moment an edit is refused, so tell it where it may edit.
   const where = turn.job.provider === "agy" && autonomy === "edit"
     ? `You can only edit files inside ${cwd}; edits anywhere else are refused and end your turn. Do all your work, builds and fixes there.\n` : "";
-  const prompt = `${input}\n\n${needsInputInstruction}\nYour work is already on branch ${branch}. Commit there and do not push.\n${where}`;
+  const prompt = `${input}\n\n${needsInputInstruction}\nYour work is already on branch ${branch}. Commit there and do not push.\nIf Git can't write its files from your sandbox, leave your changes in place: whatever you leave is committed for you when your turn ends.\n${where}`;
   if (signal.aborted) return { type: "error", code: "cancelled", message: "The turn was cancelled.", retryable: false };
   const group = sys.platform !== "win32";
   const proc = spawn(binary, args, { cwd, env: worktreeEnv(sys), detached: group,

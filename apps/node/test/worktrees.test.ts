@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -71,6 +71,42 @@ test("prunes merged and old clean worktrees while preserving unmerged commits an
   const restored = await openWorktree(sys, oldJob);
   assert.equal(git(restored.path, "rev-parse", "HEAD"), unmerged);
   await restored.release();
+});
+
+test("commits what a sandboxed agent leaves in its worktree when the turn ends", async t => {
+  const { sys, home, checkout, job } = await fixture(t);
+  // Like Codex in workspace-write: it edits files but can't write .git/worktrees/<id>, so it can't commit.
+  const worker = join(home, "fake-codex");
+  await writeFile(worker, [
+    "#!/bin/sh",
+    "cat > /dev/null",
+    "echo fixed > fix.txt",
+    `ln -s ${JSON.stringify(join(checkout, "node_modules"))} node_modules`,
+    "echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Done.\"}}'",
+    "echo '{\"type\":\"turn.completed\",\"usage\":{}}'",
+  ].join("\n") + "\n");
+  await chmod(worker, 0o755);
+  const events: unknown[] = [];
+  const spec = { ...job, provider: "codex" as const, title: "Fix the thing\nmore detail" };
+  const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const, job: spec };
+  const outcome = await runWorker(sys, worker, turn, new AbortController().signal, event => events.push(event));
+  assert.deepEqual(outcome, { type: "result", summary: "Done." });
+
+  const path = join(home, "data", "opportunity-nav", "worktrees", job.id.slice(0, 8));
+  const sha = git(path, "rev-parse", "--short", "HEAD");
+  assert.ok(events.some(event => JSON.stringify(event).includes(`Committed the changes Codex left, as ${sha}.`)));
+  assert.equal(git(path, "log", "-1", "--format=%s"), "Fix the thing");
+  assert.match(git(path, "log", "-1", "--format=%b"), /Codex left these changes uncommitted \(job [a-f0-9]{8}\)/);
+  assert.equal(git(path, "show", "--name-only", "--format=", "HEAD"), "fix.txt");
+  assert.equal(git(path, "status", "--porcelain"), "?? node_modules");
+  assert.equal(git(checkout, "status", "--porcelain"), "");
+
+  // A later turn that changes nothing leaves the branch alone.
+  await rm(worker);
+  await writeFile(worker, "#!/bin/sh\ncat > /dev/null\necho '{\"type\":\"turn.completed\",\"usage\":{}}'\n");
+  await chmod(worker, 0o755);
+  await runWorker(sys, worker, turn, new AbortController().signal, () => {});
+  assert.equal(git(path, "rev-parse", "--short", "HEAD"), sha);
 });
 
 test("ends the turn with an error when it cannot create an isolated worktree", async t => {
