@@ -48,6 +48,14 @@ export const JobSpec = z.object({
   nodeId: z.string().uuid().optional(),
   /** Source issue, if the job came from one. */
   issueUrl: z.string().url().optional(),
+  /**
+   * Land the work on the branch the checkout was on, and push it. The node starts
+   * the worktree from that branch on origin, and when the job succeeds pushes
+   * there (fast-forward, rebasing if origin moved). If that can't be done it
+   * pushes the job's own branch instead and says so in a progress event.
+   * Omitted or false: commit on the job's branch and never push.
+   */
+  push: z.boolean().optional(),
 });
 export type JobSpec = z.infer<typeof JobSpec>;
 
