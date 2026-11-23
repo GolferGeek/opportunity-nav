@@ -33,7 +33,7 @@ export async function serviceEnv(): Promise<NodeJS.ProcessEnv> {
 async function prepareServiceEnv() {
   const path = envPath();
   const keys = ["OPNAV_SERVER_URL", "OPNAV_NODE_TOKEN", "OPNAV_WORKER_AUTONOMY",
-    "OPNAV_CHECKOUT_ROOTS", "OPNAV_HANDOFF_DIR", "OLLAMA_HOST"];
+    "OPNAV_CHECKOUT_ROOTS", "OPNAV_HANDOFF_DIR", "OPNAV_CAPACITY", "OLLAMA_HOST"];
   if (process.env.OPNAV_SERVER_URL && process.env.OPNAV_NODE_TOKEN &&
     !await access(path).then(() => true, () => false)) {
     const lines = keys.flatMap(key => {

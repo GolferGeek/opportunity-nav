@@ -26,6 +26,8 @@ export interface StartNodeOptions {
   checkoutDepth?: number;
   handoffDir?: string | false;
   claimIntervalMs?: number;
+  /** Jobs this helper runs at once, each in its own worktree. Default OPNAV_CAPACITY, else 3. */
+  capacity?: number;
   externalIntervalMs?: number;
   onStatus?: (message: string) => void;
   fetch?: typeof fetch;
@@ -58,7 +60,9 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   // "Check now" from the dashboard wakes the usage loop early.
   let usageWake = new AbortController();
   let providers: ProviderCapability[] = [];
-  let activeJobId: string | undefined;
+  const capacity = jobCapacity(options.capacity ?? sys.env.OPNAV_CAPACITY);
+  // The turns running now, by job. Each has its own lease, worktree, events and cancel; nothing else is shared.
+  const running = new Map<string, Promise<void>>();
   let handoff: string | undefined;
   const handoffBriefs = new Map<string, string>();
   const configured = options.handoffDir === false ? undefined : localPath(sys, options.handoffDir ?? "~/Work/handoff");
@@ -98,7 +102,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
         arch: arch(), autonomy, helperVersion: await version, providers: detected, checkouts: discovered,
         cloudroom: cloudroom && { providers: cloudroom.providers }, tools,
-        handoff: handoff ? { dir: handoff } : undefined, activeJobIds: activeJobId ? [activeJobId] : [] });
+        handoff: handoff ? { dir: handoff } : undefined, activeJobIds: [...running.keys()], capacity });
       const answer = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
       time = answer;
       if (answer.checkUsageNow) usageWake.abort();
@@ -126,33 +130,48 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       const cloudroom = await detectCloudroom();
       const cloudroomProviders = cloudroom?.providers ?? [];
       if (!available.size && !cloudroomProviders.length) return interval;
+      const free = capacity - running.size;
+      if (free <= 0) return interval;
       const { turns } = ClaimResponse.parse(await post(NODE.claim, {
-        providers: [...available.keys()], cloudroomProviders, max: 1,
+        providers: [...available.keys()], cloudroomProviders, max: free,
       }));
-      const turn = turns[0];
-      const provider = turn && available.get(turn.job.provider);
-      const cloud = turn?.job.runner === "cloudroom";
-      if (turn && (cloud ? cloudroom?.providers.includes(turn.job.provider) : provider)) {
-        activeJobId = turn.job.id;
-        try {
-          await runTurn(post, turn, signal, report, async (lifetime, emit) => {
-            if (cloud) return runCloudroom(sys, cloudroom!.binary, turn, lifetime, emit,
-              { email: cloudroom!.email, defaultModel: cloudroom!.models[turn.job.provider] });
-            if (!provider!.locations.includes(turn.job.location)) {
-              return { type: "error", code: "provider_error", message: "The worker does not support this location.", retryable: false };
-            }
-            return provider!.provider === "ollama"
-              ? runOllama(sys, transport, provider!.models, turn, lifetime)
-              : runWorker(sys, provider!.cliPath!, turn, lifetime, emit, autonomy);
-          });
-        } finally {
-          activeJobId = undefined;
-        }
+      for (const turn of turns) {
+        if (running.has(turn.job.id) || running.size >= capacity) continue;
+        const provider = available.get(turn.job.provider);
+        const cloud = turn.job.runner === "cloudroom";
+        // A turn this machine can't run is left alone; its lease runs out and it goes back in the queue.
+        if (!(cloud ? cloudroom?.providers.includes(turn.job.provider) : provider)) continue;
+        const run = runTurn(post, turn, signal, report, async (lifetime, emit) => {
+          if (cloud) return runCloudroom(sys, cloudroom!.binary, turn, lifetime, emit,
+            { email: cloudroom!.email, defaultModel: cloudroom!.models[turn.job.provider] });
+          if (!provider!.locations.includes(turn.job.location)) {
+            return { type: "error", code: "provider_error", message: "The worker does not support this location.", retryable: false };
+          }
+          return provider!.provider === "ollama"
+            ? runOllama(sys, transport, provider!.models, turn, lifetime)
+            : runWorker(sys, provider!.cliPath!, turn, lifetime, emit, autonomy);
+        }).catch(() => {
+          if (!signal.aborted) report("A job stopped unexpectedly.");
+        }).finally(() => running.delete(turn.job.id));
+        running.set(turn.job.id, run);
       }
       return interval;
     }, 5000),
   ];
-  return { async stop() { controller.abort(); await Promise.all(tasks); } };
+  return { async stop() {
+    controller.abort();
+    await Promise.all(tasks);
+    await Promise.all(running.values());
+  } };
+}
+
+export const DEFAULT_CAPACITY = 3;
+const MAX_CAPACITY = 16;
+
+/** How many jobs to run at once: a whole number from 1 to 16, else the default. */
+export function jobCapacity(value: number | string | undefined): number {
+  const n = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof n === "number" && Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_CAPACITY) : DEFAULT_CAPACITY;
 }
 
 export async function readUsage(options: Pick<StartNodeOptions, "system" | "fetch"> = {}) {

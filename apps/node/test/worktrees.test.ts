@@ -8,7 +8,7 @@ import type { TestContext } from "node:test";
 import type { JobSpec } from "@opnav/shared";
 import { system } from "../src/system.ts";
 import { agyOutcome, pushHold, runWorker, workerArgs } from "../src/worker.ts";
-import { gitReason, openWorktree, pruneWorktrees, worktreeEnv } from "../src/worktrees.ts";
+import { gitReason, oneAtATime, openWorktree, pruneWorktrees, worktreeEnv } from "../src/worktrees.ts";
 import { git, initRepo } from "./fixtures/git.ts";
 
 async function fixture(t: TestContext) {
@@ -279,7 +279,7 @@ async function pushFixture(t: TestContext, agent: (home: string) => string[] = (
     git(other, "commit", "--quiet", "-m", `Elsewhere: ${file}`);
     git(other, "push", "--quiet", "origin", "main");
   };
-  return { sys, home, data, origin, checkout, spec, run, moveOrigin };
+  return { sys, home, data, origin, checkout, spec, run, moveOrigin, worker };
 }
 
 test("a job that pushes starts from origin's branch and lands its work there", async t => {
@@ -305,6 +305,39 @@ test("a job that pushes rebases onto origin when it moved on while it ran", asyn
   const { progress } = await run();
   assert.match(progress.at(-1)!, /^Pushed to main as [a-f0-9]+\.$/);
   assert.equal(git(origin, "log", "-2", "--format=%s", "main"), "Fix it\nElsewhere: during.txt");
+});
+
+test("jobs in the same repo run side by side, each in its own worktree, and all of them land", async t => {
+  // Each job writes its own file, named after its worktree.
+  const { origin, spec, sys, worker } = await pushFixture(t, () => ["rm fix.txt", 'echo done > "job-$(basename "$PWD").txt"']);
+  const specs = [0, 1, 2].map(() => ({ ...spec, id: randomUUID() }));
+  const results = await Promise.all(specs.map(async job => {
+    const progress: string[] = [];
+    const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const, job };
+    const outcome = await runWorker(sys, worker, turn, new AbortController().signal, event => {
+      if (event.type === "progress") progress.push(event.text);
+    });
+    return { outcome, last: progress.at(-1) };
+  }));
+  for (const r of results) {
+    assert.deepEqual(r.outcome, { type: "result", summary: "Done." });
+    assert.match(r.last!, /^Pushed to main as [a-f0-9]+\.$/, r.last);
+  }
+  const files = git(origin, "ls-tree", "--name-only", "main").split("\n").filter(f => f.startsWith("job-")).sort();
+  assert.deepEqual(files, specs.map(job => `job-${job.id.slice(0, 8)}.txt`).sort());
+});
+
+test("Git work on one checkout runs one job at a time, and a failure doesn't hold up the next", async () => {
+  const order: string[] = [];
+  const step = (name: string, ms: number, fail = false) => () => new Promise<string>((resolve, reject) => {
+    order.push(`${name} start`);
+    setTimeout(() => { order.push(`${name} end`); fail ? reject(new Error(name)) : resolve(name); }, ms);
+  });
+  const results = await Promise.allSettled([
+    oneAtATime("/a", step("a1", 30, true)), oneAtATime("/a", step("a2", 5)), oneAtATime("/b", step("b1", 5)),
+  ]);
+  assert.deepEqual(results.map(r => r.status), ["rejected", "fulfilled", "fulfilled"]);
+  assert.deepEqual(order, ["a1 start", "b1 start", "b1 end", "a1 end", "a2 start", "a2 end"]);
 });
 
 test("a job that pushes falls back to its own branch when its work conflicts with origin", async t => {

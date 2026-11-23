@@ -114,6 +114,23 @@ async function registered(sys: System, checkout: string, path: string, branch: s
   });
 }
 
+// Git work that touches a checkout's shared refs (fetch, worktree add, landing and pushing a job)
+// runs one job at a time per checkout, so jobs running side by side in the same repo don't
+// trip over each other's ref locks, and a second push lands on top of the first instead of
+// being refused. Everything else a job does happens in its own worktree, at the same time.
+const checkoutQueues = new Map<string, Promise<void>>();
+
+export function oneAtATime<T>(checkout: string, work: () => Promise<T>): Promise<T> {
+  const before = checkoutQueues.get(checkout) ?? Promise.resolve();
+  const run = before.then(work);
+  const tail = run.then(() => {}, () => {});
+  checkoutQueues.set(checkout, tail);
+  void tail.then(() => {
+    if (checkoutQueues.get(checkout) === tail) checkoutQueues.delete(checkout);
+  });
+  return run;
+}
+
 export async function openWorktree(sys: System, job: JobSpec) {
   let checkout: string;
   try {
@@ -127,56 +144,60 @@ export async function openWorktree(sys: System, job: JobSpec) {
   const id = job.id.slice(0, 8);
   const branch = `opnav/${id}`;
   try {
-    if (!shortId.test(id)) throw new Error();
-    const dir = await canonicalPath(directory(sys));
-    if (inside(checkout, dir)) throw new Error();
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    const path = join(dir, id);
-    const metadata = path + ".json";
-    const baseRef = (await git(sys, checkout, "symbolic-ref", "--quiet", "HEAD").catch(() => "")).trim();
-    const record: WorktreeRecord = { jobId: job.id, checkout, baseRef, createdAt: Date.now() };
-    await writeFile(metadata, JSON.stringify(record), { flag: "wx", mode: 0o600 }).catch(error => {
-      if (error.code !== "EEXIST") throw error;
-    });
-    let saved = await recordAt(metadata);
-    if (saved.jobId !== job.id || saved.checkout !== checkout) throw new Error();
-
-    const exists = await lstat(path).then(() => true, error => {
-      if (error.code === "ENOENT") return false;
-      throw error;
-    });
-    if (!exists) {
-      // A job that pushes lands on its checkout's branch on origin, so it starts from there.
-      // If origin can't be fetched it starts from this machine's HEAD, and then it never pushes:
-      // that history may hold commits that were never meant to leave this machine.
-      const base = job.push ? landingBranch(saved.baseRef) : undefined;
-      const start = base && await fetchBranch(sys, checkout, base)
-        .then(() => git(sys, checkout, "rev-parse", "--verify", `refs/remotes/origin/${base}^{commit}`))
-        .then(sha => sha.trim(), () => undefined);
-      const remote = start && await originUrls(sys, checkout).then(urls => urls.length === 1 ? urls[0] : undefined, () => undefined);
-      const branchExists = await git(sys, checkout, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)
-        .then(() => true, error => {
-          if (error.code === 1) return false;
-          throw error;
-        });
-      await git(sys, checkout, "worktree", "add", "--lock",
-        ...(branchExists ? [path, branch] : ["-b", branch, path, start || "HEAD"]));
-      if (!branchExists && start && remote) {
-        saved = { ...saved, start, remote };
-        await writeFile(metadata, JSON.stringify(saved), { mode: 0o600 });
-      }
-    } else {
-      if (!await registered(sys, checkout, path, branch)) throw new Error();
-      await git(sys, checkout, "worktree", "lock", path);
-    }
-    const landing = saved;
-    return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message, branch),
-      push: (signal?: AbortSignal) => pushWork(sys, path, landing, branch, signal), async release() {
-      await git(sys, checkout, "worktree", "unlock", path).catch(() => {});
-    } };
+    return await oneAtATime(checkout, () => prepare(sys, job, checkout, id, branch));
   } catch {
     throw new WorktreeError("Could not prepare a separate Git worktree for this job.");
   }
+}
+
+async function prepare(sys: System, job: JobSpec, checkout: string, id: string, branch: string) {
+  if (!shortId.test(id)) throw new Error();
+  const dir = await canonicalPath(directory(sys));
+  if (inside(checkout, dir)) throw new Error();
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, id);
+  const metadata = path + ".json";
+  const baseRef = (await git(sys, checkout, "symbolic-ref", "--quiet", "HEAD").catch(() => "")).trim();
+  const record: WorktreeRecord = { jobId: job.id, checkout, baseRef, createdAt: Date.now() };
+  await writeFile(metadata, JSON.stringify(record), { flag: "wx", mode: 0o600 }).catch(error => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  let saved = await recordAt(metadata);
+  if (saved.jobId !== job.id || saved.checkout !== checkout) throw new Error();
+
+  const exists = await lstat(path).then(() => true, error => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+  if (!exists) {
+    // A job that pushes lands on its checkout's branch on origin, so it starts from there.
+    // If origin can't be fetched it starts from this machine's HEAD, and then it never pushes:
+    // that history may hold commits that were never meant to leave this machine.
+    const base = job.push ? landingBranch(saved.baseRef) : undefined;
+    const start = base && await fetchBranch(sys, checkout, base)
+      .then(() => git(sys, checkout, "rev-parse", "--verify", `refs/remotes/origin/${base}^{commit}`))
+      .then(sha => sha.trim(), () => undefined);
+    const remote = start && await originUrls(sys, checkout).then(urls => urls.length === 1 ? urls[0] : undefined, () => undefined);
+    const branchExists = await git(sys, checkout, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)
+      .then(() => true, error => {
+        if (error.code === 1) return false;
+        throw error;
+      });
+    await git(sys, checkout, "worktree", "add", "--lock",
+      ...(branchExists ? [path, branch] : ["-b", branch, path, start || "HEAD"]));
+    if (!branchExists && start && remote) {
+      saved = { ...saved, start, remote };
+      await writeFile(metadata, JSON.stringify(saved), { mode: 0o600 });
+    }
+  } else {
+    if (!await registered(sys, checkout, path, branch)) throw new Error();
+    await git(sys, checkout, "worktree", "lock", path);
+  }
+  const landing = saved;
+  return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message, branch),
+    push: (signal?: AbortSignal) => oneAtATime(checkout, () => pushWork(sys, path, landing, branch, signal)), async release() {
+    await git(sys, checkout, "worktree", "unlock", path).catch(() => {});
+  } };
 }
 
 /**

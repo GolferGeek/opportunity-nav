@@ -74,6 +74,14 @@ A job started with `push` (a handoff brief with `push: true` does this) lands it
 - When it succeeds, the helper pushes it there. If origin moved on, it rebases first.
 - If that conflicts or the push is refused, it pushes `opnav/<id>` instead, and the job's last progress line says so.
 
+A machine runs up to 3 jobs at once, each in its own worktree. Set `OPNAV_CAPACITY` (1 to 16) on the machine to change that.
+Jobs in the same repo prepare their worktrees and push one at a time, so each push lands on top of the last.
+
+To restart or update a machine's helper without cutting a job off, stop it taking new jobs first:
+- **Settings → Machines → Stop new jobs**, or `npm run admin -w @opnav/server -- jobs-off --machine <name>` on the server.
+- Wait until it shows no jobs running (`… -- machines`), restart it, then turn it back on (`jobs-on`).
+- Jobs waiting meanwhile stay queued for the other machines, or for it.
+
 ## Handoff briefs on any machine
 
 The Mac Studio's handoff watcher (`~/Work/handoff`) can send a brief to Opportunity Nav instead of running it itself. A brief opts in with `worker:` in its frontmatter: `any`, a machine's name, or `cloudroom`. The watcher starts the job, waits for it, and writes the brief's report from the job's result. See `~/Work/handoff/PROTOCOL.md`. The worktree stays available for follow-up turns and review under `~/.local/share/opportunity-nav/worktrees`, or `$XDG_DATA_HOME/opportunity-nav/worktrees`.

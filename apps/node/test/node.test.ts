@@ -9,7 +9,7 @@ import type { TestContext } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ClaimRequest, ExternalWorkReport, JobEventsRequest, NodeHeartbeat, NODE, UsageReport } from "@opnav/shared";
 import type { JobEvent, Turn } from "@opnav/shared";
-import { startNode } from "../src/index.ts";
+import { jobCapacity, startNode } from "../src/index.ts";
 import { normalizeRemote } from "../src/capabilities.ts";
 import { handoffReport } from "../src/handoff.ts";
 import { system } from "../src/system.ts";
@@ -270,7 +270,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
   assert.ok(address && typeof address === "object");
   const statuses: string[] = [];
   const service = startNode({
-    serverUrl: `http://127.0.0.1:${address.port}`, token: "node-fixture", claimIntervalMs: 25,
+    serverUrl: `http://127.0.0.1:${address.port}`, token: "node-fixture", claimIntervalMs: 25, capacity: 1,
     externalIntervalMs: 25, system: { home, platform: "linux", env: { PATH: [bin, "/usr/bin", "/bin"].join(delimiter), OPNAV_NODE_TOKEN: "node-fixture", ROOM_FIXTURE: roomState } },
     onStatus: message => statuses.push(message),
     fetch: async (url, init) => {
@@ -311,6 +311,139 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
     revoked = true;
     for (let i = 0; i < 60 && !statuses.includes("The node token was revoked."); i++) await sleep(30);
     assert.ok(statuses.includes("The node token was revoked."));
+  } finally {
+    await service.stop();
+  }
+});
+
+test("capacity: a setting from 1 to 16, 3 by default", () => {
+  assert.equal(jobCapacity(undefined), 3);
+  assert.equal(jobCapacity(""), 3);
+  assert.equal(jobCapacity("5"), 5);
+  assert.equal(jobCapacity(1), 1);
+  assert.equal(jobCapacity("0"), 3);
+  assert.equal(jobCapacity("two"), 3);
+  assert.equal(jobCapacity("2.5"), 3);
+  assert.equal(jobCapacity(40), 16);
+});
+
+test("node runs several jobs at once, up to its capacity, each with its own lease, events and cancel", { timeout: 15_000 }, async t => {
+  const home = await fixture(t);
+  const projectId = randomUUID();
+  const make = (name: string): Turn => ({ turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
+    job: { id: randomUUID(), projectId, title: name, prompt: name, provider: "ollama", model: "fixture:latest",
+      runner: "direct", location: "local", checkoutPath: "" } });
+  const [a, b, c, d] = ["A", "B", "C", "D"].map(make) as [Turn, Turn, Turn, Turn];
+  const queue = [a, b, c, d];
+  const handedOut = new Set<string>();
+  const finished = new Set<string>();
+  const received = new Map<string, JobEvent[]>();
+  const claims: { max: number; free: number }[] = [];
+  const capacities = new Set<number>();
+  let mostActive = 0;
+  let requestError: unknown;
+  let release!: () => void;
+  const allReported = new Promise<void>(resolve => { release = resolve; });
+  let inFlight = 0;
+  let mostInFlight = 0;
+  const server = createServer(async (req, res) => {
+    try {
+      let data = "";
+      for await (const chunk of req) data += chunk;
+      const body: unknown = JSON.parse(data);
+      const respond = (value: object, code = 200) => {
+        res.writeHead(code, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(value));
+      };
+      if (req.url === NODE.heartbeat) {
+        const heartbeat = NodeHeartbeat.parse(body);
+        capacities.add(heartbeat.capacity);
+        mostActive = Math.max(mostActive, heartbeat.activeJobIds.length);
+        if (heartbeat.activeJobIds.length === 3) release();
+        return respond({ nodeId: randomUUID(), serverTime: new Date().toISOString(), usageIntervalSec: 60, heartbeatIntervalSec: 1 });
+      }
+      if (req.url === NODE.usage || req.url === NODE.external) return respond({ accepted: 0 });
+      if (req.url === NODE.claim) {
+        const { max } = ClaimRequest.parse(body);
+        const free = 3 - (handedOut.size - finished.size);
+        claims.push({ max, free });
+        const turns = queue.splice(0, max);
+        for (const turn of turns) {
+          turn.leaseExpiresAt = new Date(Date.now() + 3000).toISOString();
+          handedOut.add(turn.job.id);
+        }
+        return respond({ turns });
+      }
+      const turn = [a, b, c, d].find(item => req.url === NODE.lease(item.job.id) || req.url === NODE.events(item.job.id));
+      assert.ok(turn);
+      if (req.url === NODE.lease(turn.job.id)) {
+        assert.deepEqual(body, { leaseId: turn.leaseId });
+        return respond({ cancel: turn === b, leaseExpiresAt: new Date(Date.now() + 3000).toISOString() });
+      }
+      const events = JobEventsRequest.parse(body);
+      assert.equal(events.leaseId, turn.leaseId);
+      const recorded = received.get(turn.job.id) ?? [];
+      for (const event of events.events) {
+        if (event.seq < recorded.length) continue;
+        recorded.push(event);
+        if (["result", "error", "needs_input"].includes(event.type)) finished.add(turn.job.id);
+      }
+      received.set(turn.job.id, recorded);
+      return respond({ lastSeq: recorded.at(-1)?.seq });
+    } catch (error) {
+      requestError = error;
+      res.writeHead(500).end("{}");
+    }
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.close(); server.closeAllConnections(); });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const service = startNode({
+    serverUrl: `http://127.0.0.1:${address.port}`, token: "node-fixture", claimIntervalMs: 25, externalIntervalMs: 60_000,
+    handoffDir: false, checkoutRoots: [], system: { home, platform: "linux", env: { PATH: "/usr/bin:/bin" } },
+    fetch: async (url, init) => {
+      if (String(url).startsWith("https://api.anthropic.com")) return new Response(await usageFixture());
+      if (String(url) === "http://127.0.0.1:11434/api/tags") return Response.json({ models: [{ model: "fixture:latest" }] });
+      if (String(url) === "http://127.0.0.1:11434/api/chat") {
+        const prompt = JSON.parse(String(init?.body)).messages[0].content as string;
+        inFlight++;
+        mostInFlight = Math.max(mostInFlight, inFlight);
+        try {
+          if (prompt === "D") return Response.json({ done: true, message: { content: "D done." } });
+          // A and C wait until a heartbeat shows all three running; B runs until it's cancelled.
+          await new Promise<void>((resolve, reject) => {
+            if (prompt !== "B") void allReported.then(() => resolve());
+            init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+          });
+          return Response.json({ done: true, message: { content: `${prompt} done.` } });
+        } finally {
+          inFlight--;
+        }
+      }
+      return fetch(url, init);
+    },
+  });
+  try {
+    for (let i = 0; i < 300 && finished.size < 4; i++) {
+      if (requestError) throw requestError;
+      await sleep(30);
+    }
+    assert.ifError(requestError);
+    assert.equal(finished.size, 4, JSON.stringify({ claims, mostActive, events: [...received.values()].map(batch => batch.map(e => e.type)) }));
+    assert.deepEqual([...capacities], [3]);
+    assert.equal(mostActive, 3);
+    assert.equal(mostInFlight, 3, "three jobs ran at once, never four");
+    assert.equal(claims[0]!.max, 3);
+    for (const claim of claims) assert.ok(claim.max >= 1 && claim.max <= claim.free, JSON.stringify(claims));
+    const last = (turn: Turn) => {
+      const event = received.get(turn.job.id)?.at(-1);
+      return event?.type === "result" ? event.summary : event?.type === "error" ? event.code : event?.type;
+    };
+    assert.equal(last(a), "A done.");
+    assert.equal(last(c), "C done.");
+    assert.equal(last(b), "cancelled", "only the cancelled job stops");
+    assert.equal(last(d), "D done.", "the fourth job ran once a slot was free");
   } finally {
     await service.stop();
   }
