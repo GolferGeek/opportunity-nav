@@ -363,6 +363,8 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
       await ok(ui, "POST", `/api/jobs/${job.id}/cancel`);
       return job;
     };
+    // Earlier tests leave a job running on the laptop; a busy machine can't take a review, so end it.
+    await sql`update turns set status = 'expired', lease_id = null where status = 'running'`;
     const can = (provider: string, canRunJobs = true) => ({ provider, signedIn: true, canRunJobs, locations: ["cloud"], models: [] });
     await ok(node, "POST", "/api/node/heartbeat", { ...hb("laptop"), providers: [can("agy"), can("codex")] });
     await ok(node2, "POST", "/api/node/heartbeat", { ...hb("studio"), providers: [can("codex")], tools: ["docker", "database"] });
@@ -424,6 +426,76 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal(r.provider, "codex");
     assert.equal(r.model, null);
     await sql`update tree_nodes set default_provider = ${proj!.default_provider}, default_model = ${proj!.default_model} where id = ${proj!.id}`;
+    await sql`update subscriptions set hidden = true where provider in ('agy', 'codex')`;
+  });
+
+  test("start_review: the picked agent is what runs; busy machines, readings that aren't current, two accounts, a missing repo", async () => {
+    const start = async (input: object = {}, item = "golfer geek / opportunity nav") => {
+      const r = await ok(agent, "POST", "/a2a", { jsonrpc: "2.0", id: 1, method: "message/send",
+        params: { message: { role: "user", messageId: "m3", parts: [{ kind: "data", data: { action: "start_review", input: { item, prompt: "Review the branch", ...input } } }] } } });
+      return r.error ? { error: r.error.message as string } : r.result.parts[0].data.result;
+    };
+    const review = async (input: object = {}) => {
+      const job = await start(input);
+      if (!job.error) await ok(ui, "POST", `/api/jobs/${job.id}/cancel`);
+      return job;
+    };
+    await sql`update turns set status = 'cancelled' where status = 'queued'`;
+    await sql`update turns set status = 'expired', lease_id = null where status = 'running'`;
+    await sql`update jobs set status = 'cancelled' where status in ('queued', 'running')`;
+    const [laptop] = await sql`select n.id from nodes n join api_tokens t on t.id = n.token_id where n.name = 'laptop' and t.revoked_at is null`;
+    const [studio] = await sql`select n.id from nodes n join api_tokens t on t.id = n.token_id where n.name = 'studio' and t.revoked_at is null`;
+    const week = new Date(Date.now() + 5 * 86400e3).toISOString();
+    const acct = (provider: string, name: string, used: number) => ({ provider, accountKey: key(name), status: "ok", fetchedAt: now(),
+      windows: [{ id: "weekly", label: "Weekly", kind: "weekly", unit: "percent", used, resetsAt: week }] });
+    await ok(node, "POST", "/api/node/usage", { observedAt: now(), accounts: [acct("agy", "r2-agy", 50), acct("codex", "r2-codex-laptop", 70)] });
+
+    // The review the picker chose is the one the laptop claims: Antigravity, with no model.
+    const job = await start();
+    assert.equal(job.provider, "agy");
+    const { turns } = await ok(node, "POST", "/api/node/jobs/claim", { providers: ["agy", "codex"], max: 1 });
+    assert.equal(turns[0].job.id, job.id);
+    assert.equal(turns[0].job.provider, "agy");
+    assert.equal(turns[0].job.model, undefined);
+
+    // The laptop is busy now (one job at a time): Antigravity can't run there, and Codex goes to the studio.
+    let r = await review();
+    assert.equal(r.provider, "codex");
+    assert.match(r.picked.why, /Antigravity can't run: the machine that runs it is busy/);
+    assert.equal(r.machineId, null, "one Codex account: not pinned");
+
+    // A second Codex account, read by the studio: while the laptop is busy, the studio's usage counts and the review goes there.
+    await ok(node2, "POST", "/api/node/usage", { observedAt: now(), accounts: [acct("codex", "r2-codex-studio", 80)] });
+    r = await review();
+    assert.equal(r.picked.why, "Codex has 20% left. Antigravity can't run: the machine that runs it is busy.");
+    assert.equal(r.machineId, studio!.id);
+
+    // A machine that says it runs two at once still has a slot.
+    await ok(node, "POST", "/api/node/heartbeat", { ...hb("laptop"), providers: [{ provider: "agy", signedIn: true, canRunJobs: true, locations: ["cloud"], models: [] }, { provider: "codex", signedIn: true, canRunJobs: true, locations: ["cloud"], models: [] }], capacity: 2 });
+    assert.equal((await review()).provider, "agy");
+    await ok(node, "POST", "/api/node/heartbeat", { ...hb("laptop"), providers: [{ provider: "agy", signedIn: true, canRunJobs: true, locations: ["cloud"], models: [] }, { provider: "codex", signedIn: true, canRunJobs: true, locations: ["cloud"], models: [] }] });
+
+    // The laptop finishes: it's free again, and its Codex account (30% left) beats the studio's (20%).
+    await ok(node, "POST", `/api/node/jobs/${job.id}/events`, { leaseId: turns[0].leaseId, events: [{ seq: 0, at: now(), type: "result", summary: "Looks fine" }] });
+    r = await review({ among: ["codex"] });
+    assert.equal(r.picked.why, "Codex has 30% left.");
+    assert.equal(r.machineId, laptop!.id);
+
+    // Antigravity's reading is three hours old: Codex, with less left but current, goes first.
+    await sql`update subscriptions set fetched_at = now() - interval '3 hours' where account_key = ${key("r2-agy")}`;
+    r = await review();
+    assert.equal(r.provider, "codex");
+    assert.match(r.picked.why, /Antigravity has 50% left \(not current: read 3 h ago\)\./);
+    const dash = await ok(ui, "GET", "/api/dashboard");
+    assert.equal(dash.subscriptions.find((s: any) => s.provider === "agy").current, false);
+    assert.equal(dash.subscriptions.find((s: any) => s.provider === "codex").current, true);
+
+    // A project whose repo no machine has.
+    const [area] = await sql`select id from tree_nodes where kind = 'area' and title = 'Golfer Geek'`;
+    await ok(ui, "POST", "/api/tree", { kind: "project", title: "Elsewhere", parentId: area!.id, repoRemote: "https://github.com/GolferGeek/elsewhere" });
+    const missing = await start({}, "golfer geek / elsewhere");
+    assert.equal(missing.error, "No reviewer can run right now. Antigravity: no machine that runs it has this repo. Codex: no machine that runs it has this repo.");
+
     await sql`update subscriptions set hidden = true where provider in ('agy', 'codex')`;
   });
 

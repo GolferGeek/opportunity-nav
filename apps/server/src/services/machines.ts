@@ -6,12 +6,12 @@ import { listTree, normaliseRemote } from "./tree.ts";
 export async function heartbeat(db: Db, userId: string, tokenId: string, hb: NodeHeartbeat): Promise<string> {
   const checkouts = hb.checkouts.map((c) => ({ ...c, remote: c.remote ? normaliseRemote(c.remote) : undefined }));
   const [r] = await db<{ id: string }[]>`
-    insert into nodes (user_id, token_id, hostname, name, platform, arch, helper_version, providers, checkouts, handoff, autonomy, cloudroom, tools, last_seen_at)
+    insert into nodes (user_id, token_id, hostname, name, platform, arch, helper_version, providers, checkouts, handoff, autonomy, cloudroom, tools, capacity, last_seen_at)
     values (${userId}, ${tokenId}, ${hb.hostname}, ${hb.name ?? hb.hostname}, ${hb.platform}, ${hb.arch}, ${hb.helperVersion},
-            ${db.json(hb.providers as any)}, ${db.json(checkouts as any)}, ${hb.handoff ? db.json(hb.handoff as any) : null}, ${hb.autonomy}, ${hb.cloudroom ? db.json(hb.cloudroom as any) : null}, ${db.json([...new Set(hb.tools)])}, now())
+            ${db.json(hb.providers as any)}, ${db.json(checkouts as any)}, ${hb.handoff ? db.json(hb.handoff as any) : null}, ${hb.autonomy}, ${hb.cloudroom ? db.json(hb.cloudroom as any) : null}, ${db.json([...new Set(hb.tools)])}, ${hb.capacity ?? 1}, now())
     on conflict (token_id) do update set hostname = excluded.hostname, name = coalesce(nullif(${hb.name ?? ""}, ''), nodes.name),
       platform = excluded.platform, arch = excluded.arch, helper_version = excluded.helper_version,
-      providers = excluded.providers, checkouts = excluded.checkouts, handoff = excluded.handoff, autonomy = excluded.autonomy, cloudroom = excluded.cloudroom, tools = excluded.tools, last_seen_at = now()
+      providers = excluded.providers, checkouts = excluded.checkouts, handoff = excluded.handoff, autonomy = excluded.autonomy, cloudroom = excluded.cloudroom, tools = excluded.tools, capacity = excluded.capacity, last_seen_at = now()
     returning id`;
   return r!.id;
 }
@@ -22,7 +22,11 @@ export async function machineForToken(db: Db, tokenId: string): Promise<string |
 }
 
 export async function listMachines(db: Db, userId: string) {
-  const rows = await db`select n.*, t.revoked_at from nodes n join api_tokens t on t.id = n.token_id where n.user_id = ${userId} order by n.name`;
+  // Running = turns it holds a live lease on. That's the server's own record, so
+  // it doesn't wait for the helper's next heartbeat (activeJobIds).
+  const rows = await db`select n.*, t.revoked_at,
+      (select count(*)::int from turns r where r.node_id = n.id and r.status = 'running' and r.lease_expires_at > now()) as running
+    from nodes n join api_tokens t on t.id = n.token_id where n.user_id = ${userId} order by n.name`;
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
@@ -35,6 +39,9 @@ export async function listMachines(db: Db, userId: string) {
     autonomy: r.autonomy,
     cloudroom: r.cloudroom as { providers: string[] } | null,
     tools: (r.tools ?? []) as string[],
+    /** Jobs it runs at once, and how many it's running now. */
+    capacity: Number(r.capacity ?? 1),
+    running: Number(r.running ?? 0),
     lastSeenAt: r.last_seen_at,
     online: !r.revoked_at && Date.now() - new Date(r.last_seen_at).getTime() < 120_000,
     revoked: !!r.revoked_at,

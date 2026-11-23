@@ -1,3 +1,4 @@
+import { readingIsCurrent } from "@opnav/shared";
 import type { Db } from "../db.ts";
 import { byPriority, listTree, pathOf, type TreeNode } from "./tree.ts";
 
@@ -110,6 +111,8 @@ export async function dashboard(db: Db, userId: string) {
     status: s.status,
     message: s.message,
     fetchedAt: s.fetched_at,
+    /** False when the last check failed, it needs a sign-in, or it's over 30 minutes old. */
+    current: readingIsCurrent(s.status, s.fetched_at, now),
     monthlyCostUsd: s.monthly_cost_usd == null ? null : Number(s.monthly_cost_usd),
     windows: windows
       .filter((w) => w.subscription_id === s.id)

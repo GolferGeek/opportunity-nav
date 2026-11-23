@@ -14,7 +14,9 @@ One app, three pieces:
 - **Reviews pick their agent:** `start_review` sends a review to Antigravity or Codex, whichever has more subscription usage left.
   - An agent's usage left is its tightest window, on its best account. A window past its reset time counts as unused.
   - Antigravity's Claude and GPT allowances don't count, since a review runs its default Gemini model.
-  - If no online machine can run that agent (with the repo, and any Docker or database the job needs), the other one goes.
+  - A reading that isn't current (its last check failed, it needs a sign-in, or it's over 30 minutes old) ranks below every current one. The reply says how old it is. The dashboard marks it "Not current".
+  - If no online machine with a free slot can run that agent (with the repo, and any Docker or database the job needs), the other one goes. A machine's helper runs one job at a time unless it says otherwise.
+  - With more than one account for an agent, the usage that counts is from an account a free machine reported, and the review goes to that machine.
   - An agent with 0% left never gets a review. If both are at 0%, the review is refused and the reply says why.
   - A review doesn't inherit the project's default model unless it goes to the project's default agent.
   - The reply says which agent was picked and why.

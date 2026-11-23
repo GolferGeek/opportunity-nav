@@ -12,6 +12,7 @@ import {
   LeaseRenewRequest,
   NODE,
   NodeHeartbeat,
+  readingIsCurrent,
   UsageReport,
 } from "@opnav/shared";
 import type { Sql } from "./db.ts";
@@ -158,7 +159,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       const windows = await sql`select * from usage_windows where subscription_id = ${s.id} order by kind, window_id`;
       return {
         id: s.id, provider: s.provider, label: s.label, plan: s.plan, status: s.status, message: s.message,
-        fetchedAt: s.fetched_at, observedAt: s.observed_at, machine: s.machine, monthlyCostUsd: s.monthly_cost_usd == null ? null : Number(s.monthly_cost_usd),
+        fetchedAt: s.fetched_at, current: readingIsCurrent(s.status, s.fetched_at), observedAt: s.observed_at, machine: s.machine, monthlyCostUsd: s.monthly_cost_usd == null ? null : Number(s.monthly_cost_usd),
         windows: windows.map((w) => ({ id: w.window_id, label: w.label, kind: w.kind, unit: w.unit, used: w.used, limit: w.lim, resetsAt: w.resets_at, model: w.model })),
       };
     });
