@@ -685,6 +685,11 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     await finish(laptop, aoTurn);
     assert.match(await actFails("update_backlog_item", { jobId: ao.id, changes: { held: true } }), /can't be changed now/);
 
+    await act("set_machine", { machine: "laptop2", jobLimit: 0 });
+    const zero = await act("add_to_backlog", { repo: "github.com/example/lib", prompt: "Zero slots", machine: "laptop2" });
+    assert.equal((await act("get_lined_up", {})).next.find((i: any) => i.id === zero.id).ready, false, "a machine with no slots can't take it");
+    await act("cancel_job", { jobId: zero.id });
+    await act("set_machine", { machine: "laptop2", jobLimit: 2 });
     const shape = await act("add_to_backlog", { repo: "github.com/example/lib", prompt: "Shape", localModel: true, held: true });
     assert.match(await actFails("update_backlog_item", { jobId: shape.id, changes: { runner: "cloudroom" } }), /local models has to run on the machine/);
     assert.match(await actFails("update_backlog_item", { jobId: shape.id, changes: { localModel: false, runner: "claude-cloud", provider: "codex" } }), /only Claude/);

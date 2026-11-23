@@ -381,7 +381,7 @@ export async function linedUp(db: Db, userId: string, opts: { next?: number; all
   const byId = new Map(tree.map((n) => [n.id, n]));
   const queued = orderQueue(queuedRaw, rk);
   const busy = await loadBusy(db, userId, queued.flatMap((r) => r.after));
-  const workers = machines.filter((m) => m.online && m.takingJobs);
+  const workers = machines.filter((m) => m.online && m.takingJobs && m.slots > 0);
 
   const items = queued.map((r) => {
     let why = heldBack(r, busy);
