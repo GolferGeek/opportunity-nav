@@ -98,6 +98,10 @@ How much a job can do on a machine is that machine's choice (`OPNAV_WORKER_AUTON
 - `edit` (the default): edit files in the job worktree and run commands in a sandbox.
 - `full`: no sandbox and no prompts.
 
+## The backlog
+
+Add work to one ranked backlog (`add_to_backlog`, `set_app_ranking`) and machines pull the next item themselves when they have room, keeping the rules: on hold, waiting on another item, one local-model job per machine, one pushing job per repo and branch. `get_lined_up` (and Lined up on the Dashboard) says what's running, what's next, what's left and whether it's running low. See [docs/backlog.md](docs/backlog.md), including how to bring in the handoff hold folders.
+
 ## Running jobs in Cloudroom
 
 A job can run on your own machine (the default) or in Cloudroom's cloud sandbox. A machine with the Cloudroom app installed and signed in offers the cloud option automatically.

@@ -23,6 +23,7 @@ import { answerQuestion, cancelJob, claim, createJob, getJob, jobRow, NewJob, re
 import { createNode, listTree, NewTreeNode, TreeNodePatch, updateNode } from "./services/tree.ts";
 import { dashboard, happening } from "./services/views.ts";
 import { runAction } from "./services/actions.ts";
+import { linedUp } from "./services/backlog.ts";
 import { agentCard, handleA2A } from "./a2a.ts";
 import { handleMcp } from "./mcp.ts";
 import { ask, type AssistantConfig } from "./assistant.ts";
@@ -120,6 +121,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       return happening(sql, req.principal.userId, scope);
     });
     r.get("/api/dashboard", async (req) => dashboard(sql, req.principal.userId));
+    r.get("/api/lined-up", async (req) => {
+      const q = z.object({ all: z.enum(["0", "1"]).optional(), next: z.coerce.number().int().positive().max(200).optional() }).parse(req.query);
+      return linedUp(sql, req.principal.userId, { all: q.all === "1", next: q.next });
+    });
     r.post("/api/jobs", async (req) => createJob(sql, req.principal.userId, NewJob.parse(req.body), by(req)));
     r.get("/api/jobs", async (req) => {
       const { scope } = z.object({ scope: uuid.optional() }).parse(req.query);

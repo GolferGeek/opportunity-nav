@@ -13,7 +13,8 @@ import {
 } from "@opnav/shared";
 import type { Db, Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
-import { getNode, listTree, normaliseRemote, projectOf } from "./tree.ts";
+import { getNode, listTree, projectOf } from "./tree.ts";
+import { checkoutFor, hasLocalModels, heldBack, loadBusy, loadRanking, markBusy, orderQueue, placeInApp, queuedRows, slotsOf, turnBlocked, type Offer } from "./backlog.ts";
 
 export const MAX_ATTEMPTS = 3;
 
@@ -41,6 +42,22 @@ export const NewJob = z.object({
   issueUrl: z.string().url().optional(),
   /** Land the work on the checkout's branch and push it (see JobSpec.push). */
   push: z.boolean().optional(),
+  /** Wait in the backlog for its turn (see backlog.ts) instead of going to the front. */
+  backlog: z.boolean().optional(),
+  /** The app it counts under in the ranking; default the project's title. */
+  app: z.string().trim().min(1).max(80).optional(),
+  held: z.boolean().optional(),
+  /** Start only after these succeed: a job's key or id, or a handoff brief's name. */
+  after: z.array(z.string().trim().min(1)).optional(),
+  /** It uses the machine's own local models (Ollama): one such job per machine at a time. */
+  localModel: z.boolean().optional(),
+  /** Run from a checkout on this branch. */
+  branch: z.string().trim().min(1).optional(),
+  /** A unique name (e.g. the handoff brief's), so adding it twice is refused. */
+  key: z.string().trim().min(1).max(200).optional(),
+  /** Backlog place: first in its app, or just before this item. Default last. */
+  top: z.boolean().optional(),
+  before: z.string().uuid().optional(),
 });
 
 export async function createJob(sql: Sql, userId: string, input: z.input<typeof NewJob>, createdBy: string) {
@@ -65,15 +82,27 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
     if (location === "local") throw new HttpError(400, "Claude's cloud can't use a local model.");
   }
   const title = j.title ?? j.prompt.split("\n")[0]!.slice(0, 80);
+  if (j.localModel && runner !== "direct") throw new HttpError(400, "A job that uses the machine's local models has to run on the machine, not in a cloud.");
+  if (j.key) {
+    const [dup] = await sql`select id, status from jobs where user_id = ${userId} and lower(key) = lower(${j.key})`;
+    if (dup) throw new HttpError(409, `"${j.key}" is already in Opportunity Nav (job ${dup.id}, ${dup.status}).`);
+  }
   return sql.begin(async (tx) => {
     const [job] = await tx`
-      insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by, needs, push)
+      insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by, needs, push,
+                        backlog, app, held, after, local_model, branch, key, position)
       values (${userId}, ${project.id}, ${title}, ${j.prompt}, ${provider}, ${j.model ?? (provider === project.defaultProvider ? project.defaultModel : null) ?? null},
               ${location}, ${j.effort ?? null}, ${runner}, 'queued', ${j.machineId ?? null}, ${j.machineId != null}, ${j.issueUrl ?? null}, ${createdBy},
-              ${tx.json(needs)}, ${j.push ?? false})
+              ${tx.json(needs)}, ${j.push ?? false}, ${j.backlog ?? false}, ${j.app ?? null}, ${j.held ?? false}, ${tx.json(j.after ?? [])},
+              ${j.localModel ?? false}, ${j.branch ?? null}, ${j.key ?? null}, 0)
       returning *`;
     await tx`insert into turns (job_id, kind, status) values (${job!.id}, 'start', 'queued')`;
-    return jobRow(job);
+    if (j.backlog) await placeInApp(tx, userId, job!.id, { top: j.top, before: j.before ?? null });
+    const [row] = await tx`select * from jobs where id = ${job!.id}`;
+    return jobRow(row);
+  }).catch((e) => {
+    if (e?.code === "23505" && j.key) throw new HttpError(409, `"${j.key}" is already in Opportunity Nav.`);
+    throw e;
   });
 }
 
@@ -120,6 +149,14 @@ export function jobRow(r: any) {
     machine: (r.machine as string | null | undefined) ?? null,
     needs: (r.needs ?? []) as string[],
     push: Boolean(r.push),
+    /** Backlog: waits for its turn in the ranking (see backlog.ts). */
+    backlog: Boolean(r.backlog),
+    app: (r.app as string | null) ?? null,
+    held: Boolean(r.held),
+    after: (r.after ?? []) as string[],
+    localModel: Boolean(r.local_model),
+    branch: (r.branch as string | null) ?? null,
+    key: (r.key as string | null) ?? null,
     lastProgress: r.last_progress as string | null,
     summary: r.summary as string | null,
     createdBy: r.created_by as string,
@@ -130,47 +167,50 @@ export function jobRow(r: any) {
 }
 
 /**
- * Hand out queued turns this machine can run: right provider, and a checkout of the project's repo.
- * Never more than the machine has free: its capacity minus the turns it holds live leases on.
- * The machine's row is locked for the claim, so two claims at once can't both fill the same slots.
+ * Hand out queued turns this machine can run, in the backlog's order (see
+ * backlog.ts): right agent, a checkout of the project's repo (on the job's
+ * branch, if it names one), what it needs, and nothing holding it back (held,
+ * waiting on another item, the machine's local models busy, its branch being
+ * pushed to by another job). Never more than the machine has free: its slots
+ * minus the turns it holds live leases on. Claims for one person take turns
+ * (an advisory lock), so two machines can't both start jobs the rules say
+ * mustn't run together, and two claims can't fill the same slots.
  */
 export async function claim(sql: Sql, userId: string, machineId: string, req: ClaimRequest): Promise<Turn[]> {
   return sql.begin(async (tx) => {
-    const [machine] = await tx<{ checkouts: { path: string; remote?: string }[]; tools: string[]; capacity: number; taking_jobs: boolean }[]>`
-      select checkouts, tools, capacity, taking_jobs from nodes where id = ${machineId} and user_id = ${userId} for update`;
+    await tx`select pg_advisory_xact_lock(hashtext(${`opnav-claim:${userId}`}))`;
+    const [machine] = await tx<{ checkouts: { path: string; remote?: string; branch?: string }[]; tools: string[]; capacity: number; job_limit: number | null; taking_jobs: boolean; providers: any[] }[]>`
+      select checkouts, tools, capacity, job_limit, taking_jobs, providers from nodes where id = ${machineId} and user_id = ${userId} for update`;
     if (!machine) throw new HttpError(401, "Unknown machine; send a heartbeat first.");
     if (!machine.taking_jobs) return [];
     const [held] = await tx<{ running: number }[]>`select count(*)::int as running from turns
       where node_id = ${machineId} and status = 'running' and lease_expires_at > now()`;
-    const free = Math.min(req.max, Number(machine.capacity ?? 1) - Number(held?.running ?? 0));
+    const free = Math.min(req.max, slotsOf(machine) - Number(held?.running ?? 0));
     if (free <= 0) return [];
-    const checkoutFor = new Map<string, string>();
-    for (const c of machine.checkouts ?? []) if (c.remote && !checkoutFor.has(normaliseRemote(c.remote))) checkoutFor.set(normaliseRemote(c.remote), c.path);
-    const remotes = [...checkoutFor.keys()];
-    if (remotes.length === 0) return [];
+    const offer: Offer = {
+      id: machineId, providers: req.providers, cloudroomProviders: req.cloudroomProviders, claudeCloud: req.claudeCloud,
+      tools: machine.tools ?? [], checkouts: machine.checkouts ?? [], localModels: hasLocalModels(machine.providers ?? []),
+    };
+    const rows = orderQueue(await queuedRows(tx, userId), await loadRanking(tx, userId));
+    const busy = await loadBusy(tx, userId, rows.flatMap((r) => r.after));
 
-    const rows = await tx`
-      select t.id as turn_id, t.kind, t.answer_id, j.*, p.repo_remote
-      from turns t join jobs j on j.id = t.job_id join tree_nodes p on p.id = j.project_id
-      where t.status = 'queued' and j.user_id = ${userId} and j.status = 'queued' and not j.cancel_requested
-        and ((j.runner = 'direct' and j.provider in ${tx(req.providers.length ? req.providers : ["-"])})
-          or (j.runner = 'cloudroom' and j.provider in ${tx(req.cloudroomProviders.length ? req.cloudroomProviders : ["-"])})
-          or (j.runner = 'claude-cloud' and j.provider = 'claude' and ${req.claudeCloud}))
-        and p.repo_remote in ${tx(remotes)}
-        and (j.node_id is null or j.node_id = ${machineId})
-        and (j.runner <> 'direct' or j.needs <@ ${tx.json(machine.tools ?? [])}::jsonb)
-      order by t.created_at
-      limit ${free}
-      for update of t, j skip locked`;
     const turns: Turn[] = [];
     for (const r of rows) {
-      const leaseId = randomUUID();
-      const checkoutPath = r.kind === "continue" && r.checkout_path ? r.checkout_path : checkoutFor.get(r.repo_remote)!;
+      if (turns.length >= free) break;
+      if (heldBack(r, busy)) continue;
+      const c = checkoutFor(r, offer);
+      if ("why" in c) continue;
+      if (turnBlocked(r, machineId, c.branch, busy)) continue;
+      // Take it only if it's still queued and not being cancelled. The job is locked first, as cancelJob locks it, so the two can't deadlock.
+      const [still] = await tx`select id from jobs where id = ${r.id} and status = 'queued' and not cancel_requested for update`;
+      if (!still) continue;
       const [t] = await tx`
-        update turns set status = 'running', node_id = ${machineId}, lease_id = ${leaseId},
+        update turns set status = 'running', node_id = ${machineId}, lease_id = ${randomUUID()},
           lease_expires_at = now() + make_interval(secs => ${LEASE_SECONDS}), started_at = now()
-        where id = ${r.turn_id} returning lease_expires_at`;
-      await tx`update jobs set status = 'running', node_id = ${machineId}, checkout_path = ${checkoutPath},
+        where id = ${r.turn_id!} and status = 'queued' returning lease_id, lease_expires_at`;
+      if (!t) continue;
+      markBusy(r, machineId, c.branch, busy);
+      await tx`update jobs set status = 'running', node_id = ${machineId}, checkout_path = ${c.path}, checkout_branch = ${c.branch},
         attempts = attempts + 1, updated_at = now() where id = ${r.id}`;
       let answer: Turn["answer"];
       if (r.answer_id) {
@@ -178,22 +218,22 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
         if (a) answer = { answerId: a.id, questionId: a.question_id, text: a.text };
       }
       turns.push({
-        turnId: r.turn_id,
-        leaseId,
-        leaseExpiresAt: new Date(t!.lease_expires_at).toISOString(),
+        turnId: r.turn_id!,
+        leaseId: t.lease_id,
+        leaseExpiresAt: new Date(t.lease_expires_at).toISOString(),
         kind: r.kind,
         job: {
           id: r.id,
           projectId: r.project_id,
           title: r.title,
           prompt: r.prompt,
-          provider: r.provider,
+          provider: r.provider as ProviderId,
           model: r.model ?? undefined,
           location: r.location,
-          runner: r.runner,
+          runner: r.runner as Runner,
           effort: r.effort ?? undefined,
-          checkoutPath,
-          remote: r.repo_remote,
+          checkoutPath: c.path,
+          remote: r.repo_remote!,
           nodeId: machineId,
           issueUrl: r.issue_url ?? undefined,
           ...(r.push ? { push: true } : {}),

@@ -601,6 +601,145 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     await sql`update jobs set status = 'cancelled' where project_id = ${project.id} and status in ('queued', 'running')`;
   });
 
+  test("backlog: machines pull the next item themselves, in the app ranking's order, keeping every rule", async () => {
+    // A person of their own, so nothing from the other tests is in their backlog.
+    const [u2] = await sql`insert into users (name) values ('Backlog') returning id`;
+    const bui = (await createToken(sql, u2!.id, "ui", "b ui")).token;
+    const bagent = (await createToken(sql, u2!.id, "agent", "products")).token;
+    const studio = (await createToken(sql, u2!.id, "node", "b studio")).token;
+    const laptop = (await createToken(sql, u2!.id, "node", "b laptop")).token;
+    const act = (action: string, input: unknown) => ok(bagent, "POST", "/a2a", {
+      jsonrpc: "2.0", id: 1, method: "message/send", params: { message: { role: "user", messageId: "m", parts: [{ kind: "data", data: { action, input } }] } },
+    }).then((r) => {
+      assert.ok(!r.error && r.result?.parts?.[0]?.data?.error === undefined, `${action}: ${JSON.stringify(r.error ?? r.result?.parts)}`);
+      return r.result.parts[0].data.result;
+    });
+    const actFails = async (action: string, input: unknown) => {
+      const r = await call(bagent, "POST", "/a2a", {
+        jsonrpc: "2.0", id: 1, method: "message/send", params: { message: { role: "user", messageId: "m", parts: [{ kind: "data", data: { action, input } }] } },
+      });
+      return JSON.stringify(r.body);
+    };
+    const appRemote = "git@github.com:example/app.git", libRemote = "https://github.com/example/lib";
+    const ollama = { provider: "ollama", signedIn: true, canRunJobs: true, locations: ["local"], models: ["qwen3:8b"] };
+    const beat = (tok: string, name: string, extra: object = {}) => ok(tok, "POST", "/api/node/heartbeat", {
+      ...hb(name), capacity: 3,
+      checkouts: [{ path: `/w/${name}/app`, remote: appRemote, branch: "main" }, { path: `/w/${name}/app-feature`, remote: appRemote, branch: "feature" },
+        { path: `/w/${name}/lib`, remote: libRemote, branch: "main" }],
+      ...extra,
+    });
+    await beat(studio, "studio", { providers: [...hb("x").providers, ollama], tools: ["docker", "database"] });
+    await beat(laptop, "laptop2");
+    const area = await ok(bui, "POST", "/api/tree", { kind: "area", title: "Coding" });
+    await ok(bui, "POST", "/api/tree", { kind: "project", title: "App", parentId: area.id, repoRemote: appRemote, defaultProvider: "claude" });
+    await ok(bui, "POST", "/api/tree", { kind: "project", title: "Lib", parentId: area.id, repoRemote: libRemote, defaultProvider: "claude" });
+
+    // Nothing claims while we fill it.
+    await act("set_machine", { machine: "studio", takingJobs: false });
+    await act("set_machine", { machine: "laptop2", takingJobs: false });
+    const legal1 = await act("add_to_backlog", { repo: "github.com/example/app", app: "Legal", prompt: "Legal one", key: "2026-11-23-legal-one" });
+    await act("add_to_backlog", { repo: "github.com/example/app", app: "Legal", prompt: "Legal two", after: ["2026-11-23-legal-one"] });
+    const lib1 = await act("add_to_backlog", { item: "Coding / Lib", prompt: "Lib one" });
+    const ao = await act("add_to_backlog", { repo: "github.com/example/lib", app: "Agents Only", prompt: "Agents only one", held: true });
+    await act("add_to_backlog", { repo: "github.com/example/app", app: "legal", prompt: "Legal zero", top: true });
+    assert.equal(legal1.backlog, true);
+    assert.equal(lib1.app, null, "no app: it counts under its project");
+    assert.match(await actFails("add_to_backlog", { repo: "github.com/example/app", prompt: "again", key: "2026-11-23-LEGAL-one" }), /already in Opportunity Nav/);
+    await act("set_app_ranking", { apps: ["Legal", "Agents Only", "Lib"] });
+
+    // Waiting items don't crowd What's happening; Lined up shows them, in order.
+    const h = await ok(bui, "GET", "/api/happening");
+    assert.equal(h.flatMap((g: any) => g.items).filter((i: any) => i.kind === "job").length, 0, "the backlog stays out of What's happening");
+    let lu = await act("get_lined_up", {});
+    assert.deepEqual(lu.next.map((i: any) => i.title), ["Legal zero", "Legal one", "Legal two", "Lib one"], "held items aren't next");
+    assert.deepEqual(lu.ranking, ["Legal", "Agents Only", "Lib"]);
+    assert.match(lu.next[2].why, /Waits for 2026-11-23-legal-one/);
+    assert.match(lu.next[0].why, /not taking|No machine/i);
+    assert.equal(lu.total.held, 1);
+    assert.deepEqual(lu.perApp.map((a: any) => [a.app, a.ready + a.waiting, a.held]), [["Legal", 3, 0], ["Agents Only", 0, 1], ["Lib", 1, 0]]);
+    assert.equal((await ok(bui, "GET", "/api/lined-up?all=1")).next.length, 5, "all = held ones too");
+
+    // A job started right away goes first; then the ranking.
+    await act("start_job", { repo: "github.com/example/lib", prompt: "Right now" });
+    await act("set_machine", { machine: "laptop2", takingJobs: true, jobLimit: 2 });
+    lu = await act("get_lined_up", {});
+    assert.equal(lu.perMachine.find((m: any) => m.name === "laptop2").slots, 2, "the owner's limit");
+    const claimL = (max = 3) => ok(laptop, "POST", "/api/node/jobs/claim", { providers: ["claude"], max });
+    const c1 = (await claimL()).turns;
+    assert.deepEqual(c1.map((t: any) => t.job.title), ["Right now", "Legal zero"], "start-now first, then the top of the ranking; never past the limit");
+    const finish = (tok: string, t: any, type = "result") => ok(tok, "POST", `/api/node/jobs/${t.job.id}/events`, {
+      leaseId: t.leaseId, events: [type === "result" ? { seq: 0, at: now(), type, summary: "Done" } : { seq: 0, at: now(), type: "error", code: "other", message: "no" }],
+    });
+    for (const t of c1) await finish(laptop, t);
+    const c2 = (await claimL()).turns;
+    assert.deepEqual(c2.map((t: any) => t.job.title), ["Legal one", "Lib one"], "Legal two waits for Legal one, so Lib one goes");
+    await finish(laptop, c2[0]);
+    const c3 = (await claimL()).turns;
+    assert.deepEqual(c3.map((t: any) => t.job.title), ["Legal two"], "its dependency succeeded");
+    await finish(laptop, c2[1]);
+    await finish(laptop, c3[0]);
+    assert.equal((await claimL()).turns.length, 0, "the held item never starts");
+    await act("update_backlog_item", { jobId: ao.id, changes: { held: false } });
+    const [aoTurn] = (await claimL()).turns;
+    assert.equal(aoTurn.job.id, ao.id, "let go, it goes");
+    await finish(laptop, aoTurn);
+    assert.match(await actFails("update_backlog_item", { jobId: ao.id, changes: { held: true } }), /can't be changed now/);
+
+    // Waiting on a handoff brief that's still in the old queue.
+    const viaBrief = await act("add_to_backlog", { repo: "github.com/example/lib", prompt: "After a brief", after: ["2026-11-23-old-brief"] });
+    assert.equal((await claimL()).turns.length, 0);
+    await ok(laptop, "POST", "/api/node/external", { items: [{ source: "handoff", externalId: "2026-11-23-old-brief", title: "Old", status: "succeeded", updatedAt: now(), questions: [] }], complete: [] });
+    const [vb] = (await claimL()).turns;
+    assert.equal(vb.job.id, viaBrief.id, "the brief's done report counts");
+    await finish(laptop, vb);
+
+    // Reordering inside an app.
+    await act("set_machine", { machine: "laptop2", takingJobs: false });
+    const a = await act("add_to_backlog", { repo: "github.com/example/lib", app: "Lib", prompt: "A" });
+    const b = await act("add_to_backlog", { repo: "github.com/example/lib", app: "Lib", prompt: "B" });
+    const c = await act("add_to_backlog", { repo: "github.com/example/lib", app: "Lib", prompt: "C" });
+    await act("update_backlog_item", { jobId: c.id, changes: { before: a.id } });
+    await act("update_backlog_item", { jobId: b.id, changes: { top: true } });
+    assert.deepEqual((await act("get_lined_up", {})).next.map((i: any) => i.title), ["B", "C", "A"]);
+    for (const j of [a, b, c]) await act("cancel_job", { jobId: j.id });
+    assert.equal((await act("get_lined_up", {})).total.waiting, 0, "cancelled items leave the backlog");
+
+    // One local-model job per machine; only a machine with local models takes one.
+    await act("set_machine", { machine: "laptop2", takingJobs: true, jobLimit: null });
+    await act("set_machine", { machine: "studio", takingJobs: true });
+    lu = await act("get_lined_up", {});
+    assert.deepEqual([lu.runningLow.low, lu.runningLow.ready, lu.runningLow.slots], [true, 0, 6], "nothing ready for six slots: running low");
+    const lm1 = await act("add_to_backlog", { repo: "github.com/example/lib", prompt: "Scorecard 1", localModel: true });
+    const lm2 = await act("add_to_backlog", { repo: "github.com/example/lib", prompt: "Scorecard 2", localModel: true });
+    assert.equal((await claimL()).turns.length, 0, "the laptop has no local models");
+    const claimS = () => ok(studio, "POST", "/api/node/jobs/claim", { providers: ["claude"], max: 3 });
+    const s1 = (await claimS()).turns;
+    assert.deepEqual(s1.map((t: any) => t.job.id), [lm1.id], "one at a time");
+    lu = await act("get_lined_up", {});
+    assert.match(lu.next.find((i: any) => i.id === lm2.id).why, /local models/);
+    assert.equal(lu.running.length, 1);
+    await finish(studio, s1[0]);
+    const s2 = (await claimS()).turns;
+    assert.deepEqual(s2.map((t: any) => t.job.id), [lm2.id]);
+    await finish(studio, s2[0]);
+
+    // Two pushing jobs never land on the same repo and branch at once; another branch is fine.
+    const p1 = await act("add_to_backlog", { repo: "github.com/example/app", prompt: "Push 1", push: true });
+    const p2 = await act("add_to_backlog", { repo: "github.com/example/app", prompt: "Push 2", push: true });
+    const pf = await act("add_to_backlog", { repo: "github.com/example/app", prompt: "Push feature", push: true, branch: "feature" });
+    const n1 = await act("add_to_backlog", { repo: "github.com/example/app", prompt: "No push" });
+    const fromS = (await claimS()).turns, fromL = (await claimL()).turns;
+    const got = new Map([...fromS, ...fromL].map((t: any) => [t.job.id, t]));
+    assert.ok(got.has(p1.id) && !got.has(p2.id), "Push 2 waits for main");
+    assert.equal(got.get(pf.id)?.job.checkoutPath.endsWith("/app-feature"), true, "the feature item runs from the feature checkout");
+    assert.ok(got.has(n1.id), "a job that doesn't push isn't held back");
+    lu = await act("get_lined_up", {});
+    assert.match(lu.next.find((i: any) => i.id === p2.id).why, /main to be free/);
+    await finish(fromS.includes(got.get(p1.id)) ? studio : laptop, got.get(p1.id));
+    const after = [...(await claimS()).turns, ...(await claimL()).turns];
+    assert.deepEqual(after.map((t: any) => t.job.id), [p2.id], "main is free again");
+  });
+
   test("MCP: lists the same tools", async () => {
     const r = await app.inject({
       method: "POST", url: "/mcp",

@@ -86,7 +86,7 @@ function Home() {
         {node && <Detail node={node} path={path} onChanged={refresh} onOpenJob={setJob} onError={setToast} onSelect={select} />}
         <div className="panes">
           <Happening groups={happening.data} onChanged={refresh} onOpenJob={setJob} onOpenExternal={setExternal} onSelect={select} onError={setToast} />
-          <Dashboard dash={dash.data} onChanged={refresh} onSelect={select} onOpenSub={setSub} onError={setToast} />
+          <Dashboard dash={dash.data} onChanged={refresh} onSelect={select} onOpenSub={setSub} onOpenJob={setJob} onError={setToast} />
         </div>
       </main>
       {claude && <ClaudePanel scope={node ? { id: node.id, path } : null} onClose={() => setClaude(false)} onChanged={refresh}

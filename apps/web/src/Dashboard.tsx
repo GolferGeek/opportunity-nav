@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ago, api, providerName, until } from "./api.ts";
 import { readingClass, readingNote } from "./labels.ts";
+import { LinedUp } from "./LinedUp.tsx";
 
 export interface Dash {
   totalMonthlyUsd: number;
@@ -20,11 +21,12 @@ export interface Dash {
   projects: { id: string; path: string[]; priority: string; line: string; active: number; questions: number; roadblocks: number }[];
 }
 
-export function Dashboard({ dash, onChanged, onSelect, onOpenSub, onError }: { dash: Dash | null; onChanged: () => void; onSelect: (id: string) => void; onOpenSub: (id: string) => void; onError: (m: string) => void }) {
+export function Dashboard({ dash, onChanged, onSelect, onOpenSub, onOpenJob, onError }: { dash: Dash | null; onChanged: () => void; onSelect: (id: string) => void; onOpenSub: (id: string) => void; onOpenJob: (id: string) => void; onError: (m: string) => void }) {
   if (!dash) return <section className="pane"><h2>Dashboard</h2><p className="muted">Loading…</p></section>;
   return (
     <section className="pane">
       <h2>Dashboard</h2>
+      <LinedUp onOpenJob={onOpenJob} onError={onError} />
       <h4 className="row-head">
         <span>Subscriptions {dash.totalMonthlyUsd > 0 && <span className="muted"> · ${dash.totalMonthlyUsd.toFixed(0)}/month</span>}</span>
         <span className="spacer" />

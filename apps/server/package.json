@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node --env-file-if-exists=../../.env src/main.ts",
     "dev": "node --watch --env-file-if-exists=../../.env src/main.ts",
-    "admin": "node --env-file-if-exists=../../.env src/admin.ts"
+    "admin": "node --env-file-if-exists=../../.env src/admin.ts",
+    "backlog-import": "node src/backlog-import.ts"
   },
   "dependencies": {
     "@fastify/static": "^8.0.0",

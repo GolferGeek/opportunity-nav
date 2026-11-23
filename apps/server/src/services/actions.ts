@@ -5,7 +5,8 @@ import { HttpError } from "../errors.ts";
 import { answerQuestion, cancelJob, createJob, getJob } from "./jobs.ts";
 import { createNode, listTree, normaliseRemote, pathOf, projectOf, TreeNodePatch, updateNode, type TreeNode } from "./tree.ts";
 import { DEFAULT_REVIEWERS, pickReviewer } from "./reviewer.ts";
-import { listMachines } from "./machines.ts";
+import { listMachines, setJobLimit, setTakingJobs } from "./machines.ts";
+import { BacklogFields, Effort, linedUp, setAppRanking, updateBacklogItem } from "./backlog.ts";
 import { dashboard, happening } from "./views.ts";
 import { messageGrokBot } from "./outbound.ts";
 
@@ -110,6 +111,7 @@ export const actions = {
           name: m.name, online: m.online, lastSeenAt: m.lastSeenAt, helperVersion: m.helperVersion,
           runsJobsWith: (m.providers as any[]).filter((p) => p.canRunJobs && p.signedIn).map((p) => p.provider),
           tools: m.tools, cloudroom: m.cloudroom?.providers ?? [],
+          jobs: { atOnce: m.capacity, running: m.running, takingJobs: m.takingJobs },
           claudeCloud: m.claudeCloud?.ready ? "ready" : m.claudeCloud?.reason ?? "not set up",
         }));
     },
@@ -169,13 +171,86 @@ export const actions = {
       return { ...job, picked };
     },
   },
+  add_to_backlog: {
+    description: "Add a job to the backlog. It waits its turn and starts by itself when a machine with room can run it: in the app ranking's order (set_app_ranking), then its place inside its app. It never starts while held, while an item in after hasn't succeeded, while another local-model job runs on that machine (localModel), or while another pushing job runs for the same repo and branch. Name the project by item or repo. app is what it counts under in the ranking (default: the project's title). Agent, model and machine as in start_job (machine omitted: any machine that can). key is a unique name, e.g. a handoff brief's, so it can't be added twice; after can name keys, job ids or handoff brief names. Default place: last in its app; top puts it first, before puts it just before another waiting item.",
+    input: z.object({
+      item: Ref.optional().describe("The project (or an item inside it). Or give repo instead."),
+      repo: z.string().min(1).optional().describe("The project's git remote, when item isn't given"),
+      prompt: z.string().min(1),
+      title: z.string().optional(),
+      app: z.string().min(1).max(80).optional().describe('What it counts under in the app ranking, e.g. "Legal". Default: the project\'s title.'),
+      provider: ProviderId.optional().describe("The agent: claude, codex, agy… Default: the project's."),
+      model: z.string().optional(),
+      location: Location.optional(),
+      effort: Effort.optional(),
+      runner: Runner.optional(),
+      machine: z.string().optional().describe("Only this machine runs it. Default: any machine that can."),
+      needs: z.array(MachineTool).optional().describe("What the machine must have: docker, database. Default: the project's."),
+      push: z.boolean().optional().describe("Land the work on the checkout's branch and push it. Default false."),
+      branch: z.string().min(1).optional().describe("Run from a checkout on this branch (e.g. a worktree's). Default: the machine's checkout of the repo."),
+      after: z.array(z.string().min(1)).optional().describe("Start only after these succeed: keys, job ids, or handoff brief names"),
+      localModel: z.boolean().optional().describe("It runs the machine's own local models (Ollama). Only one such job per machine at a time."),
+      held: z.boolean().optional().describe("Add it on hold: it never starts until let go."),
+      key: z.string().min(1).max(200).optional().describe("A unique name for it, e.g. the handoff brief's name"),
+      top: z.boolean().optional().describe("First in its app"),
+      before: z.string().uuid().optional().describe("Just before this waiting item (same app)"),
+    }),
+    run: async (sql: Sql, userId: string, i: any, by: string) => {
+      if (!i.item && !i.repo) throw new HttpError(400, "Name the project: item or repo.");
+      const node = i.item ? await resolveRef(sql, userId, i.item) : await projectByRemote(sql, userId, i.repo);
+      const { machine, item: _item, repo: _repo, ...job } = i;
+      const machineId = machine ? await machineByName(sql, userId, machine) : undefined;
+      return createJob(sql, userId, { ...job, nodeId: node.id, machineId, backlog: true }, by);
+    },
+  },
+  update_backlog_item: {
+    description: "Change a backlog item that hasn't started: hold it (held true) or let it go (held false), move it (top, or before another waiting item in its app, or to another app), or change its title, task, agent, model, machine (null = any), needs, push, branch, after or localModel. To drop it, use cancel_job.",
+    input: z.object({
+      jobId: z.string().uuid(),
+      changes: BacklogFields.extend({
+        machine: z.string().nullable().optional().describe("Only this machine; null = any machine"),
+        top: z.boolean().optional(),
+        before: z.string().uuid().nullable().optional().describe("Just before this waiting item; null = last in its app"),
+      }),
+    }),
+    run: async (sql: Sql, userId: string, i: any) => {
+      const { machine, ...changes } = i.changes;
+      const machineId = machine === undefined ? undefined : machine === null ? null : await machineByName(sql, userId, machine);
+      return updateBacklogItem(sql, userId, i.jobId, { ...changes, machineId });
+    },
+  },
+  set_app_ranking: {
+    description: "Set the app ranking: the order backlog items go in, by app, first to last (e.g. [\"Legal\", \"Agents Only\", \"Opportunity Nav\"]). It replaces the whole ranking. Apps left out go after the ranked ones, in tree order. Inside an app, items keep their own order.",
+    input: z.object({ apps: z.array(z.string().min(1).max(80)) }),
+    run: (sql: Sql, userId: string, i: any) => setAppRanking(sql, userId, i.apps),
+  },
+  get_lined_up: {
+    description: "Read-only: what's lined up. running = jobs running now; next = the next waiting items in the order they'll start, each with ready (it starts when one of canRunOn has a free slot) or why it's waiting; total, perApp and perMachine = how much is left; runningLow = fewer items ready than the machines have slots; finished = backlog items that ended in the last sinceHours (default 24); ranking = the app ranking.",
+    input: z.object({
+      next: z.number().int().positive().max(200).optional().describe("How many waiting items to list. Default 5."),
+      all: z.boolean().optional().describe("List every waiting item, held ones too."),
+      sinceHours: z.number().positive().max(24 * 14).optional(),
+    }),
+    run: (sql: Sql, userId: string, i: any) => linedUp(sql, userId, i),
+  },
+  set_machine: {
+    description: "Set how many jobs a machine runs at once (jobLimit, at most what its helper runs; null = the helper's own number), or whether it takes new jobs at all (takingJobs). A machine not taking jobs finishes the ones it has.",
+    input: z.object({ machine: z.string().min(1), jobLimit: z.number().int().nonnegative().max(32).nullable().optional(), takingJobs: z.boolean().optional() }),
+    run: async (sql: Sql, userId: string, i: any) => {
+      const id = await machineByName(sql, userId, i.machine);
+      if (i.jobLimit !== undefined) await setJobLimit(sql, userId, id, i.jobLimit);
+      if (i.takingJobs !== undefined) await setTakingJobs(sql, userId, { id }, i.takingJobs);
+      const m = (await listMachines(sql, userId)).find((m) => m.id === id)!;
+      return { name: m.name, capacity: m.capacity, jobLimit: m.jobLimit, running: m.running, takingJobs: m.takingJobs };
+    },
+  },
   get_job: {
     description: "A job's status, progress, questions and result.",
     input: z.object({ jobId: z.string().uuid() }),
     run: (sql: Sql, userId: string, i: any) => getJob(sql, userId, i.jobId),
   },
   cancel_job: {
-    description: "Stop a job.",
+    description: "Stop a job, or drop it from the backlog.",
     input: z.object({ jobId: z.string().uuid() }),
     run: (sql: Sql, userId: string, i: any) => cancelJob(sql, userId, i.jobId),
   },

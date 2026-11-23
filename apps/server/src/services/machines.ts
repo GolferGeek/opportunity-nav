@@ -41,8 +41,11 @@ export async function listMachines(db: Db, userId: string) {
     /** Claude's cloud through a routine: ready, or why not ("not set up"). Null when the helper doesn't say. */
     claudeCloud: r.claude_cloud as { ready: boolean; reason?: string } | null,
     tools: (r.tools ?? []) as string[],
-    /** Jobs it runs at once, and how many it's running now. */
-    capacity: Number(r.capacity ?? 1),
+    /** Jobs it runs at once (its helper's capacity, or its owner's lower limit), and how many it's running now. */
+    capacity: Math.min(Number(r.capacity ?? 1), r.job_limit == null ? Infinity : Number(r.job_limit)),
+    /** What its helper runs at once, and the owner's limit (null = none). */
+    helperCapacity: Number(r.capacity ?? 1),
+    jobLimit: r.job_limit == null ? null : Number(r.job_limit),
     running: Number(r.running ?? 0),
     /** Off: it finishes what it has and claims nothing new. */
     takingJobs: r.taking_jobs !== false,
@@ -58,6 +61,11 @@ export async function setTakingJobs(db: Db, userId: string, machine: { id?: stri
     where user_id = ${userId} and ${machine.id ? db`id = ${machine.id}` : db`lower(name) = lower(${machine.name ?? ""})`}
     returning id, name`;
   return rows;
+}
+
+/** Keep a machine below what its helper runs (null = the helper's own number). */
+export async function setJobLimit(db: Db, userId: string, machineId: string, jobLimit: number | null) {
+  await db`update nodes set job_limit = ${jobLimit} where id = ${machineId} and user_id = ${userId}`;
 }
 
 /** A fresh good reading from another machine beats a failure from this one for this long. */

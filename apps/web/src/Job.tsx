@@ -24,6 +24,14 @@ export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onCl
             {job.tokens && (job.tokens.input || job.tokens.output) ? ` · ${(job.tokens.input + job.tokens.output).toLocaleString()} tokens` : ""}
             {job.costUsd ? ` · $${job.costUsd.toFixed(2)}` : ""} · started by {job.createdBy} {ago(job.createdAt)}
           </div>
+          {job.backlog && (
+            <div className="muted small">
+              In the backlog under {job.app ?? "its project"}{job.held ? ", on hold" : ""}.
+              {job.after?.length ? ` Starts after ${job.after.join(", ")}.` : ""}
+              {job.localModel ? " Uses the machine's local models." : ""}
+              {job.branch ? <> Runs from <code>{job.branch}</code>.</> : ""}
+            </div>
+          )}
           {job.cloudroom && (
             <div className="muted small">
               Runs in a Cloudroom sandbox from the repo's default branch on GitHub. Its work is pushed to <code>{job.cloudroom.branch}</code>.
@@ -49,7 +57,7 @@ export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onCl
           <h4>{live ? "What it's doing" : "What it did"}</h4>
           <Activity live={!!live}
             lines={job.events.filter((e: any) => e.type !== "usage").map((e: any) => ({ at: e.at, text: describe(e) }))}
-            empty={job.status === "queued" ? "Waiting for a machine that has this repo and agent." : "Nothing yet."} />
+            empty={job.status === "queued" ? (job.backlog ? "Waiting its turn in the backlog." : "Waiting for a machine that has this repo and agent.") : "Nothing yet."} />
           <h4>Asked</h4>
           <pre className="prompt">{job.prompt}</pre>
         </>

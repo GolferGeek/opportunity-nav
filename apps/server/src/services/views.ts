@@ -45,7 +45,8 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
     db`select r.*, j.title as job_title from roadblocks r left join jobs j on j.id = r.job_id
        where r.user_id = ${userId} and r.status = 'open'`,
     db`select j.*, n.name as machine from jobs j left join nodes n on n.id = j.node_id
-       where j.user_id = ${userId} and j.status in ('queued', 'running')`,
+       where j.user_id = ${userId} and j.status in ('queued', 'running')
+         and not (j.backlog and j.status = 'queued' and j.attempts = 0)`, // backlog items waiting their turn show under Lined up
     db`select w.*, n.name as machine from external_work w left join nodes n on n.id = w.node_id
        where w.user_id = ${userId} and w.gone_at is null and w.status in ('queued', 'running', 'waiting')`,
   ]);
