@@ -178,16 +178,20 @@ export async function runWorker(sys: System, binary: string, turn: Turn, signal:
           return false;
         });
     }
-    // A pushing job lands its work only when it's done, not when it stops to ask.
-    if (turn.job.push && outcome.type === "result") {
-      const held = pushHold(outcome.summary, committed, signal);
-      emit({ type: "progress", text: held ? `Not pushed: ${held} The work is on branch ${worktree.branch} on this machine.`
-        : await worktree.push(signal) });
-    }
+    await land(worktree, turn, outcome, committed, signal, emit);
     return outcome;
   } finally {
     await worktree.release();
   }
+}
+
+/** A pushing job lands its work only when it's done, not when it stops to ask. */
+export async function land(worktree: { branch: string; push(signal?: AbortSignal): Promise<string> }, turn: Turn,
+  outcome: Terminal, committed: boolean, signal: AbortSignal, emit: (event: EventContent) => void) {
+  if (!turn.job.push || outcome.type !== "result") return;
+  const held = pushHold(outcome.summary, committed, signal);
+  emit({ type: "progress", text: held ? `Not pushed: ${held} The work is on branch ${worktree.branch} on this machine.`
+    : await worktree.push(signal) });
 }
 
 async function runInWorktree(sys: System, binary: string, turn: Turn, signal: AbortSignal,

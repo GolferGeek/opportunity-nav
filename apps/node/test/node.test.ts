@@ -218,6 +218,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
         assert.equal(heartbeat.autonomy, "edit");
         assert.match(heartbeat.helperVersion, /^0\.1\.0(\+[0-9a-f]{7,40}(\.dirty)?)?$/);
         assert.deepEqual(heartbeat.cloudroom, { providers: ["claude", "codex", "agy"] });
+        assert.deepEqual(heartbeat.claudeCloud, { ready: false, reason: "not set up" });
         assert.deepEqual(heartbeat.providers.find(value => value.provider === "ollama")?.models, ["fixture:latest"]);
         assert.ok(heartbeat.providers.some(value => value.provider === "claude" && value.canRunJobs && value.signedIn));
         active ||= heartbeat.activeJobIds.includes(turns[2]!.job.id);
@@ -232,7 +233,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
         return respond({ accepted: 1 });
       }
       if (req.url === NODE.claim) {
-        assert.deepEqual(ClaimRequest.parse(body), { providers: ["claude", "codex", "ollama"], cloudroomProviders: ["claude", "codex", "agy"], max: 1 });
+        assert.deepEqual(ClaimRequest.parse(body), { providers: ["claude", "codex", "ollama"], cloudroomProviders: ["claude", "codex", "agy"], claudeCloud: false, max: 1 });
         const turn = turns[claim++];
         if (turn) turn.leaseExpiresAt = new Date(Date.now() + 3500).toISOString();
         return respond({ turns: turn ? [turn] : [] });

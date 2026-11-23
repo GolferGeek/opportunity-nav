@@ -135,7 +135,11 @@ export function oneAtATime<T>(checkout: string, work: () => Promise<T>): Promise
   return run;
 }
 
-export async function openWorktree(sys: System, job: JobSpec) {
+/**
+ * fromOrigin: start a new worktree from the checkout's branch on origin even when the job
+ * doesn't push (a cloud session can only start from commits origin has).
+ */
+export async function openWorktree(sys: System, job: JobSpec, options: { fromOrigin?: boolean } = {}) {
   let checkout: string;
   try {
     if (!isAbsolute(job.checkoutPath)) throw new Error();
@@ -154,7 +158,7 @@ export async function openWorktree(sys: System, job: JobSpec) {
       // doesn't run here. A pushing job also needs origin's push address to be that repo.
       const checked = job.remote === undefined ? undefined : await checkOrigin(sys, checkout, job.remote, !!job.push);
       if (typeof checked === "string") throw new WorktreeError(`This checkout can't run the job: ${checked}.`);
-      return prepare(sys, job, checkout, id, branch, checked);
+      return prepare(sys, job, checkout, id, branch, checked, !!options.fromOrigin);
     });
   } catch (error) {
     if (error instanceof WorktreeError) throw error;
@@ -162,7 +166,8 @@ export async function openWorktree(sys: System, job: JobSpec) {
   }
 }
 
-async function prepare(sys: System, job: JobSpec, checkout: string, id: string, branch: string, checked: Origin | undefined) {
+async function prepare(sys: System, job: JobSpec, checkout: string, id: string, branch: string, checked: Origin | undefined,
+  fromOrigin: boolean) {
   if (!shortId.test(id)) throw new Error();
   const dir = await canonicalPath(directory(sys));
   if (inside(checkout, dir)) throw new Error();
@@ -186,7 +191,7 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
     // If origin can't be fetched (or the server didn't say which repo the job belongs to) it starts
     // from this machine's HEAD, and then it never pushes: that history may hold commits that were
     // never meant to leave this machine.
-    const base = job.push && checked?.pushUrl ? landingBranch(saved.baseRef) : undefined;
+    const base = job.push && checked?.pushUrl || fromOrigin && checked ? landingBranch(saved.baseRef) : undefined;
     const start = base && await fetchBranch(sys, checkout, checked!.fetchUrl, base)
       .then(() => git(sys, checkout, "rev-parse", "--verify", `refs/remotes/origin/${base}^{commit}`))
       .then(sha => sha.trim(), () => undefined);
@@ -210,10 +215,56 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
     await git(sys, checkout, "worktree", "lock", path);
   }
   const landing = saved;
+  const fetchUrl = checked?.fetchUrl ?? saved.fetchUrl;
   return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message, branch),
-    push: (signal?: AbortSignal) => oneAtATime(checkout, () => pushWork(sys, path, landing, branch, signal)), async release() {
-    await git(sys, checkout, "worktree", "unlock", path).catch(() => {});
-  } };
+    push: (signal?: AbortSignal) => oneAtATime(checkout, () => pushWork(sys, path, landing, branch, signal)),
+    /** The branch it lands on and the commit it started from on origin, when it started there. */
+    landing: landing.start ? { base: landingBranch(landing.baseRef), start: landing.start } : undefined,
+    /** A branch's commit on origin (at the checked address), or undefined when origin hasn't got it. */
+    remoteBranch: (name: string, signal?: AbortSignal) => remoteBranch(sys, path, fetchUrl, name, signal),
+    /** Fetch a branch from origin (at the checked address) and return its tip. */
+    fetchBranch: (name: string, signal?: AbortSignal) => oneAtATime(checkout, () => fetchOther(sys, path, fetchUrl, name, signal)),
+    /** Fast-forward the job's branch to a commit. Returns how many commits it gained. */
+    fastForward: (target: string) => oneAtATime(checkout, () => fastForward(sys, path, branch, target)),
+    async release() {
+      await git(sys, checkout, "worktree", "unlock", path).catch(() => {});
+    } };
+}
+
+export class GitError extends Error {}
+
+async function remoteBranch(sys: System, path: string, url: string | undefined, name: string, signal?: AbortSignal) {
+  if (!url) throw new GitError("the job has no checked address for its repo");
+  const out = await network(sys, path, signal, "ls-remote", "--heads", "--", url, `refs/heads/${name}`)
+    .catch(error => { throw new GitError(gitReason(error)); });
+  const sha = out.split(/\s+/)[0];
+  return sha && /^[a-f0-9]{40,64}$/.test(sha) ? sha : undefined;
+}
+
+async function fetchOther(sys: System, path: string, url: string | undefined, name: string, signal?: AbortSignal) {
+  if (!url) throw new GitError("the job has no checked address for its repo");
+  const ref = `refs/opnav-cloud/${name}`;
+  await network(sys, path, signal, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", url, `+refs/heads/${name}:${ref}`)
+    .catch(error => { throw new GitError(`could not fetch ${name} (${gitReason(error)})`); });
+  return (await git(sys, path, "rev-parse", "--verify", `${ref}^{commit}`)).trim();
+}
+
+/**
+ * Bring work someone else pushed (a cloud session) into the job's worktree, by fast-forward only:
+ * the job's branch must be an ancestor of the commit taken, so nothing on it is lost or rewritten.
+ */
+async function fastForward(sys: System, path: string, branch: string, target: string): Promise<number> {
+  if (!await onBranch(sys, path, branch)) throw new GitError(`the worktree is not on ${branch}`);
+  const head = (await git(sys, path, "rev-parse", "HEAD")).trim();
+  if (!await git(sys, path, "merge-base", "--is-ancestor", head, target).then(() => true, () => false)) {
+    throw new GitError("its branch doesn't build on the commit it was given");
+  }
+  if ((await git(sys, path, "status", "--porcelain", "--untracked-files=no")).trim()) {
+    throw new GitError("the worktree has uncommitted changes");
+  }
+  const count = Number((await git(sys, path, "rev-list", "--count", target, `^${head}`)).trim());
+  if (count) await git(sys, path, "merge", "--ff-only", "--quiet", target);
+  return count;
 }
 
 /**

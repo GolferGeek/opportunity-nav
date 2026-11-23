@@ -6,6 +6,7 @@ import { ClaimResponse, DEFAULT_HEARTBEAT_INTERVAL_SEC, DEFAULT_USAGE_INTERVAL_S
 import type { ProviderCapability } from "@opnav/shared";
 import { nodeApi } from "./api.ts";
 import { capabilities, checkouts, machineTools } from "./capabilities.ts";
+import { claudeCloudDetector, runClaudeCloud } from "./claudecloud.ts";
 import { cloudroomDetector, runCloudroom } from "./cloudroom.ts";
 import { handoffReport } from "./handoff.ts";
 import { runTurn } from "./lease.ts";
@@ -54,6 +55,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   });
   const collect = createUsageCollector({ sys, fetch: transport, signal });
   const detectCloudroom = cloudroomDetector(sys);
+  const detectClaudeCloud = claudeCloudDetector(sys);
   const version = helperVersion(sys);
   let time = { heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC, usageIntervalSec: DEFAULT_USAGE_INTERVAL_SEC };
   let registered = false;
@@ -92,9 +94,9 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   const tasks = [
     loop("send a heartbeat", async () => {
       handoff = configured && await access(configured).then(() => configured, () => undefined);
-      const [detected, discovered, models, cloudroom, tools] = await Promise.all([
+      const [detected, discovered, models, cloudroom, tools, claudeCloud] = await Promise.all([
         capabilities(sys), checkouts(sys, roots, options.checkoutDepth ?? 4), ollamaModels(sys, transport, signal), detectCloudroom(),
-        machineTools(sys),
+        machineTools(sys), detectClaudeCloud(),
       ]);
       if (models.length) detected.push({
         provider: "ollama", canRunJobs: true, signedIn: true, locations: ["local"], models,
@@ -102,6 +104,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
         arch: arch(), autonomy, helperVersion: await version, providers: detected, checkouts: discovered,
         cloudroom: cloudroom && { providers: cloudroom.providers }, tools,
+        claudeCloud: claudeCloud.ready ? { ready: true } : { ready: false, reason: claudeCloud.reason },
         handoff: handoff ? { dir: handoff } : undefined, activeJobIds: [...running.keys()], capacity });
       const answer = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
       time = answer;
@@ -129,19 +132,23 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       const available = new Map(providers.filter(p => p.canRunJobs && p.signedIn).map(p => [p.provider, p]));
       const cloudroom = await detectCloudroom();
       const cloudroomProviders = cloudroom?.providers ?? [];
-      if (!available.size && !cloudroomProviders.length) return interval;
+      // Claude's cloud needs only the routine file: the runner doesn't use the Claude CLI.
+      const claudeCloud = await detectClaudeCloud();
+      if (!available.size && !cloudroomProviders.length && !claudeCloud.ready) return interval;
       const free = capacity - running.size;
       if (free <= 0) return interval;
       const { turns } = ClaimResponse.parse(await post(NODE.claim, {
-        providers: [...available.keys()], cloudroomProviders, max: free,
+        providers: [...available.keys()], cloudroomProviders, claudeCloud: claudeCloud.ready, max: free,
       }));
       for (const turn of turns) {
         if (running.has(turn.job.id) || running.size >= capacity) continue;
         const provider = available.get(turn.job.provider);
         const cloud = turn.job.runner === "cloudroom";
+        const routine = turn.job.runner === "claude-cloud" && claudeCloud.ready ? claudeCloud.config : undefined;
         // A turn this machine can't run is left alone; its lease runs out and it goes back in the queue.
-        if (!(cloud ? cloudroom?.providers.includes(turn.job.provider) : provider)) continue;
+        if (!(turn.job.runner === "claude-cloud" ? routine : cloud ? cloudroom?.providers.includes(turn.job.provider) : provider)) continue;
         const run = runTurn(post, turn, signal, report, async (lifetime, emit) => {
+          if (routine) return runClaudeCloud(sys, routine, turn, lifetime, emit, { fetch: transport });
           if (cloud) return runCloudroom(sys, cloudroom!.binary, turn, lifetime, emit,
             { email: cloudroom!.email, defaultModel: cloudroom!.models[turn.job.provider] });
           if (!provider!.locations.includes(turn.job.location)) {

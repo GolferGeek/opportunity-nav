@@ -106,6 +106,14 @@ A job can run on your own machine (the default) or in Cloudroom's cloud sandbox.
 - It starts from the repo's default branch on GitHub, so unpushed local changes aren't there.
 - It pushes its work to a branch named `opnav/<first 8 characters of the job ID>` for you to review. It never opens a pull request or touches the default branch.
 
+## Running Claude jobs in Claude's cloud
+
+A Claude job can also run in Claude's own cloud, through a Claude Code routine on your Max plan. A machine offers it once you've saved the routine's token on it: see [docs/claude-cloud-setup.md](docs/claude-cloud-setup.md).
+
+- It starts from the checkout's branch on origin, so unpushed local changes aren't there.
+- The cloud session pushes to a `claude/opnav-…` branch. The machine brings that in and lands it like any job (with push, on the checkout's branch).
+- There's no status API: a run that never pushes shows up only as a timeout (45 minutes, then one more try).
+
 ## Developing
 
 ```sh
