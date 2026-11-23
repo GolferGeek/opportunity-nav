@@ -12,18 +12,27 @@ import { listMachines } from "./machines.ts";
  * left is its tightest window (100 - used %). That's what stops the agent
  * first. A window whose reset time has passed counts as unused, like on the
  * dashboard. Model-only windows are skipped, since a review runs the agent's
- * default model.
+ * default model. So are Antigravity's Claude and GPT groups: they're extra
+ * allowances for those models, and running out of them doesn't stop its
+ * default Gemini model.
+ *
+ * An agent with 0% left never gets a review, even when it's the only one that
+ * could run: the job would just fail on its limit.
  */
 
 export const DEFAULT_REVIEWERS: readonly ProviderId[] = ["agy", "codex"];
 
-export type WindowRow = { unit: string; used: number | string; lim?: number | string | null; resets_at?: Date | string | null; model?: string | null };
+export type WindowRow = { window_id?: string; unit: string; used: number | string; lim?: number | string | null; resets_at?: Date | string | null; model?: string | null };
+
+/** Antigravity reports quota groups as `<group>:<bucket>`; the Claude and GPT groups only limit those models. */
+export const otherModelsGroup = (provider: string, w: WindowRow) =>
+  provider === "agy" && /claude|gpt/i.test((w.window_id ?? "").split(":")[0] ?? "");
 
 /** Percent left (0–100) of an account's tightest window, or null when none of its windows says. */
-export function accountLeft(windows: WindowRow[], now = Date.now()): number | null {
+export function accountLeft(windows: WindowRow[], now = Date.now(), provider = ""): number | null {
   let left: number | null = null;
   for (const w of windows) {
-    if (w.model) continue;
+    if (w.model || otherModelsGroup(provider, w)) continue;
     const used = Number(w.used), lim = w.lim == null ? null : Number(w.lim);
     const percent = w.unit === "percent" ? used : lim ? (used / lim) * 100 : null;
     if (percent == null || !Number.isFinite(percent)) continue;
@@ -38,34 +47,40 @@ export type Candidate = {
   provider: string;
   /** Percent left, or null when there's no reading. */
   left: number | null;
-  /** Why no machine can run it right now, if so. */
+  /** Why no machine can run it right now, if so. One with 0% left can't run either. */
   cantRun?: string;
 };
 
+export const empty = (c: Candidate) => c.left != null && c.left <= 0;
+const runnable = (c: Candidate) => !c.cantRun && !empty(c);
+
 /**
  * Who reviews: the runnable candidate with the most left. No reading ranks
- * below any agent with usage left but above one that's known to be empty.
+ * below any agent with usage left. One with 0% left is never picked.
  * Ties go to the order given.
  */
 export function rankReviewers(candidates: Candidate[]): Candidate | null {
-  const score = (c: Candidate) => (c.left == null ? 0 : c.left <= 0 ? -1 : c.left);
-  return candidates.filter((c) => !c.cantRun).reduce<Candidate | null>((best, c) => (!best || score(c) > score(best) ? c : best), null);
+  const score = (c: Candidate) => c.left ?? 0;
+  return candidates.filter(runnable).reduce<Candidate | null>((best, c) => (!best || score(c) > score(best) ? c : best), null);
 }
 
 const LABELS: Record<string, string> = { agy: "Antigravity", codex: "Codex", claude: "Claude" };
 const label = (p: string) => LABELS[p] ?? p;
-const leftText = (c: Candidate) => (c.left == null ? "no usage reading" : `${Math.round(c.left)}% left`);
+const leftText = (c: Candidate) =>
+  c.left == null ? "no usage reading" : c.left > 0 && c.left < 1 ? "under 1% left" : `${Math.round(c.left)}% left`;
+const whyNot = (c: Candidate) => c.cantRun ?? (empty(c) ? "no usage left" : undefined);
 
 /** One plain line on why this one was picked. */
 export function pickReason(picked: Candidate, all: Candidate[]): string {
   const others = all.filter((c) => c !== picked);
-  const parts = others.map((o) => o.cantRun ? `${label(o.provider)} can't run: ${o.cantRun}` : `${label(o.provider)} has ${leftText(o)}`);
-  return [`${label(picked.provider)} has ${leftText(picked)}.`, ...parts.map((p) => `${p}.`)].join(" ");
+  const parts = others.map((o) => whyNot(o) ? `${label(o.provider)} can't run: ${whyNot(o)}` : `${label(o.provider)} has ${leftText(o)}`);
+  const tied = others.some((o) => runnable(o) && o.left === picked.left);
+  return [`${label(picked.provider)} has ${leftText(picked)}.`, ...parts.map((p) => `${p}.`), ...(tied ? ["A tie goes to the first listed."] : [])].join(" ");
 }
 
 /** Usage left for each provider: the best of its visible accounts. */
 export async function usageLeft(db: Db, userId: string, providers: readonly string[]): Promise<Map<string, number | null>> {
-  const rows = await db`select s.id, s.provider, w.unit, w.used, w.lim, w.resets_at, w.model
+  const rows = await db`select s.id, s.provider, w.window_id, w.unit, w.used, w.lim, w.resets_at, w.model
     from subscriptions s left join usage_windows w on w.subscription_id = s.id
     where s.user_id = ${userId} and not s.hidden and s.provider in ${db(providers as string[])}`;
   const byAccount = new Map<string, { provider: string; windows: WindowRow[] }>();
@@ -76,7 +91,7 @@ export async function usageLeft(db: Db, userId: string, providers: readonly stri
   }
   const out = new Map<string, number | null>(providers.map((p) => [p, null]));
   for (const a of byAccount.values()) {
-    const l = accountLeft(a.windows);
+    const l = accountLeft(a.windows, Date.now(), a.provider);
     const cur = out.get(a.provider) ?? null;
     if (l != null && (cur == null || l > cur)) out.set(a.provider, l);
   }
@@ -102,7 +117,7 @@ export async function pickReviewer(db: Db, userId: string, among: readonly strin
   for (const provider of among) all.push({ provider, left: left.get(provider) ?? null, cantRun: await cantRun(db, userId, provider, want) });
   const picked = rankReviewers(all);
   if (!picked) {
-    throw new HttpError(409, `No reviewer can run right now. ${all.map((c) => `${label(c.provider)}: ${c.cantRun}.`).join(" ")}`);
+    throw new HttpError(409, `No reviewer can run right now. ${all.map((c) => `${label(c.provider)}: ${whyNot(c)}.`).join(" ")}`);
   }
   return { provider: picked.provider, why: pickReason(picked, all), candidates: all };
 }

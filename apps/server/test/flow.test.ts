@@ -402,6 +402,28 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await review({ needs: ["database"] })).provider, "codex");
     const none = await review({ among: ["agy"], needs: ["database"] });
     assert.match(none.error, /No reviewer can run right now. Antigravity: no machine that runs it has database/);
+
+    // 0% left: never picked. Antigravity is empty, so Codex goes even with less left elsewhere; both empty: refused.
+    await new Promise((res) => setTimeout(res, 5));
+    await usage(100, codexWeekly(95));
+    r = await review();
+    assert.equal(r.provider, "codex");
+    assert.match(r.picked.why, /Antigravity can't run: no usage left/);
+    await new Promise((res) => setTimeout(res, 5));
+    await usage(100, codexWeekly(100));
+    const both = await review();
+    assert.equal(both.error, "No reviewer can run right now. Antigravity: no usage left. Codex: no usage left.");
+    assert.match((await review({ among: ["codex"] })).error, /Codex: no usage left/);
+
+    // A review doesn't inherit a model meant for the project's default agent.
+    await new Promise((res) => setTimeout(res, 5));
+    await usage(20, codexWeekly(10));
+    const [proj] = await sql`select id, default_provider, default_model from tree_nodes where kind = 'project' and title ilike 'opportunity nav' limit 1`;
+    await sql`update tree_nodes set default_provider = 'claude', default_model = 'claude-opus-5-5' where id = ${proj!.id}`;
+    r = await review();
+    assert.equal(r.provider, "codex");
+    assert.equal(r.model, null);
+    await sql`update tree_nodes set default_provider = ${proj!.default_provider}, default_model = ${proj!.default_model} where id = ${proj!.id}`;
     await sql`update subscriptions set hidden = true where provider in ('agy', 'codex')`;
   });
 

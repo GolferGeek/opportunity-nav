@@ -13,7 +13,10 @@ One app, three pieces:
 - **Agent doors:** A2A at `/a2a` (agent card at `/.well-known/agent-card.json`) and MCP at `/mcp`. Grok Bot or any other agent can read the tree, add to it, answer questions and start jobs.
 - **Reviews pick their agent:** `start_review` sends a review to Antigravity or Codex, whichever has more subscription usage left.
   - An agent's usage left is its tightest window, on its best account. A window past its reset time counts as unused.
+  - Antigravity's Claude and GPT allowances don't count, since a review runs its default Gemini model.
   - If no online machine can run that agent (with the repo, and any Docker or database the job needs), the other one goes.
+  - An agent with 0% left never gets a review. If both are at 0%, the review is refused and the reply says why.
+  - A review doesn't inherit the project's default model unless it goes to the project's default agent.
   - The reply says which agent was picked and why.
 
 Usage comes straight from each provider, using the sign-in its own CLI already saved on that machine. It's read-only, tokens are never refreshed and never sent anywhere else. See [docs/subscription-usage.md](docs/subscription-usage.md).
