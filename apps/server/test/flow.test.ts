@@ -355,6 +355,20 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     const [row] = await sql`select n.name from jobs j join nodes n on n.id = j.node_id where j.id = ${pinned.id}`;
     assert.equal(row!.name, "studio");
     await ok(ui, "POST", `/api/jobs/${pinned.id}/cancel`);
+
+    // A handoff brief names its project by repo, and can ask for the work to be pushed.
+    const byRepo = (await rpc({ action: "start_job", input: { repo: "git@github.com:golfergeek/opportunity-nav.git", prompt: "From a brief", machine: "studio", push: true } })).result.parts[0].data.result;
+    assert.equal(byRepo.projectId, projectId);
+    assert.equal(byRepo.push, true);
+    const claimed = await ok(node2, "POST", "/api/node/jobs/claim", { providers: ["claude"], max: 5 });
+    assert.equal(claimed.turns.find((t: any) => t.job.id === byRepo.id)?.job.push, true);
+    await sql`update turns set status = 'expired', lease_id = null where job_id = ${byRepo.id}`;
+    await sql`update jobs set status = 'cancelled' where id = ${byRepo.id}`;
+    const plain = (await rpc({ action: "start_job", input: { repo: "https://github.com/GolferGeek/opportunity-nav", prompt: "No push" } })).result.parts[0].data.result;
+    assert.equal(plain.push, false);
+    await ok(ui, "POST", `/api/jobs/${plain.id}/cancel`);
+    assert.match((await rpc({ action: "start_job", input: { repo: "github.com/nobody/nothing", prompt: "x" } })).error.message, /No project has the repo github.com\/nobody\/nothing/);
+    assert.match((await rpc({ action: "start_job", input: { prompt: "x" } })).error.message, /Name the project: item or repo/);
   });
 
   test("start_review: Antigravity or Codex, whichever has more usage left and can run", async () => {

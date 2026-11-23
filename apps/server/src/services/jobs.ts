@@ -36,6 +36,8 @@ export const NewJob = z.object({
   /** Pin to a machine. */
   machineId: z.string().uuid().optional(),
   issueUrl: z.string().url().optional(),
+  /** Land the work on the checkout's branch and push it (see JobSpec.push). */
+  push: z.boolean().optional(),
 });
 
 export async function createJob(sql: Sql, userId: string, input: z.input<typeof NewJob>, createdBy: string) {
@@ -58,10 +60,10 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
   const title = j.title ?? j.prompt.split("\n")[0]!.slice(0, 80);
   return sql.begin(async (tx) => {
     const [job] = await tx`
-      insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by, needs)
+      insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by, needs, push)
       values (${userId}, ${project.id}, ${title}, ${j.prompt}, ${provider}, ${j.model ?? (provider === project.defaultProvider ? project.defaultModel : null) ?? null},
               ${location}, ${j.effort ?? null}, ${runner}, 'queued', ${j.machineId ?? null}, ${j.machineId != null}, ${j.issueUrl ?? null}, ${createdBy},
-              ${tx.json(needs)})
+              ${tx.json(needs)}, ${j.push ?? false})
       returning *`;
     await tx`insert into turns (job_id, kind, status) values (${job!.id}, 'start', 'queued')`;
     return jobRow(job);
@@ -108,6 +110,7 @@ export function jobRow(r: any) {
     /** The machine that has (or last had) it, by name. */
     machine: (r.machine as string | null | undefined) ?? null,
     needs: (r.needs ?? []) as string[],
+    push: Boolean(r.push),
     lastProgress: r.last_progress as string | null,
     summary: r.summary as string | null,
     createdBy: r.created_by as string,
@@ -173,6 +176,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
           checkoutPath,
           nodeId: machineId,
           issueUrl: r.issue_url ?? undefined,
+          ...(r.push ? { push: true } : {}),
         },
         providerSessionId: r.kind === "continue" ? (r.provider_session_id ?? undefined) : undefined,
         answer,

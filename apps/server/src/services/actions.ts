@@ -3,7 +3,7 @@ import { Location, MachineTool, ProviderId, Runner } from "@opnav/shared";
 import type { Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { answerQuestion, cancelJob, createJob, getJob } from "./jobs.ts";
-import { createNode, listTree, pathOf, projectOf, TreeNodePatch, updateNode, type TreeNode } from "./tree.ts";
+import { createNode, listTree, normaliseRemote, pathOf, projectOf, TreeNodePatch, updateNode, type TreeNode } from "./tree.ts";
 import { DEFAULT_REVIEWERS, pickReviewer } from "./reviewer.ts";
 import { listMachines } from "./machines.ts";
 import { dashboard, happening } from "./views.ts";
@@ -39,6 +39,15 @@ export async function resolveRef(sql: Sql, userId: string, ref: string): Promise
   if (matches.length === 1) return matches[0]!;
   if (matches.length === 0) throw new HttpError(404, `Nothing in the tree is called "${ref}".`);
   throw new HttpError(409, `"${ref}" matches ${matches.length} items: ${matches.map((m) => pathOf(byId, m.id).join(" / ")).join("; ")}. Say which.`);
+}
+
+/** The project whose git remote is this one (any spelling: SSH, HTTPS, with or without .git). */
+export async function projectByRemote(sql: Sql, userId: string, remote: string): Promise<TreeNode> {
+  const want = normaliseRemote(remote);
+  const matches = (await listTree(sql, userId)).filter((n) => n.kind === "project" && n.repoRemote === want);
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length === 0) throw new HttpError(404, `No project has the repo ${want}. Add it to a project first.`);
+  throw new HttpError(409, `${matches.length} projects have the repo ${want}: ${matches.map((m) => m.title).join("; ")}. Name the item instead.`);
 }
 
 export const actions = {
@@ -110,9 +119,10 @@ export const actions = {
     run: (sql: Sql, userId: string, i: any, by: string) => answerQuestion(sql, userId, i.questionId, i.answer, by),
   },
   start_job: {
-    description: "Start an agent on a task in a project. Provider, model and location default to the project's settings. Any online machine with the agent and the repo picks it up; set machine to choose one, and needs if it must have Docker or a test database. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch).",
+    description: "Start an agent on a task in a project. Provider, model and location default to the project's settings. Any online machine with the agent and the repo picks it up; set machine to choose one, and needs if it must have Docker or a test database. Name the project by item, or by repo (its git remote). Set push to land the work on the branch the machine's checkout is on and push it; otherwise it stays on the job's own branch, unpushed. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch).",
     input: z.object({
-      item: Ref.describe("The project (or an item inside it) to work on"),
+      item: Ref.optional().describe("The project (or an item inside it) to work on. Or give repo instead."),
+      repo: z.string().min(1).optional().describe("The project's git remote, e.g. github.com/owner/name, when item isn't given"),
       prompt: z.string().min(1),
       title: z.string().optional(),
       provider: ProviderId.optional(),
@@ -122,10 +132,12 @@ export const actions = {
       runner: Runner.optional().describe("direct (default): on one of the person's machines. cloudroom: in Cloudroom's cloud."),
       machine: z.string().optional().describe("Run it on this machine (its name, e.g. the one list_machines shows). Default: any machine that can."),
       needs: z.array(MachineTool).optional().describe("What the machine must have: docker, database (a local Postgres for tests). Default: the project's."),
+      push: z.boolean().optional().describe("Land the work on the checkout's branch (e.g. main) and push it. Default false: commit on the job's branch, never push."),
     }),
     run: async (sql: Sql, userId: string, i: any, by: string) => {
-      const node = await resolveRef(sql, userId, i.item);
-      const { machine, ...job } = i;
+      if (!i.item && !i.repo) throw new HttpError(400, "Name the project: item or repo.");
+      const node = i.item ? await resolveRef(sql, userId, i.item) : await projectByRemote(sql, userId, i.repo);
+      const { machine, item: _item, repo: _repo, ...job } = i;
       const machineId = machine ? await machineByName(sql, userId, machine) : undefined;
       return createJob(sql, userId, { ...job, nodeId: node.id, machineId }, by);
     },
