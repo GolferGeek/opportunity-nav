@@ -40,10 +40,11 @@ export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbo
       ...(job.effort ? ["--effort", job.effort] : []), ...(resume ? ["--resume", resume] : [])];
   }
   if (job.provider === "agy") {
-    // Headless agy can't ask before running a command, so in edit mode it refused every one and ended with an
-    // empty answer. Let commands run, but only inside agy's own sandbox (terminal restrictions, no network).
+    // Headless agy can't ask, so it refuses anything not allowed up front and ends with an empty answer.
+    // Edit mode: commands run inside agy's own sandbox (terminal restrictions, no network), files can be read
+    // anywhere (like Claude and Codex), and edits stay inside the worktree.
     const permissions = autonomy === "full" ? ["--dangerously-skip-permissions"]
-      : ["--mode", "accept-edits", "--sandbox", "--settings", JSON.stringify({ permissions: { allow: ["command(*)"] } })];
+      : ["--mode", "accept-edits", "--sandbox", "--settings", JSON.stringify({ permissions: { allow: ["command(*)", "read_file(*)"] } })];
     return ["-p", "", "--input-format", "stream-json", "--output-format", "stream-json", ...permissions, ...model,
       ...(job.effort ? ["--effort", job.effort] : []), ...(resume ? ["--conversation", resume] : [])];
   }

@@ -94,7 +94,7 @@ test("Antigravity in edit mode may run commands inside its sandbox, and an empty
       provider: "agy" as const, runner: "direct" as const, location: "cloud" as const } };
   const args = workerArgs(turn, "edit");
   assert.ok(args.includes("--sandbox"));
-  assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]!), { permissions: { allow: ["command(*)"] } });
+  assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]!), { permissions: { allow: ["command(*)", "read_file(*)"] } });
   assert.ok(!workerArgs(turn, "full").includes("--settings"));
 
   const refused = agyOutcome({ status: "SUCCESS", response: "", denied_actions: [{ action: "command", display_name: "Bash" }] });
