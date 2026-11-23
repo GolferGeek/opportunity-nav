@@ -13,6 +13,30 @@ import { startNode } from "@opnav/node";
 // Hyprland and other non-GNOME/KDE desktops aren't auto-detected; use the Secret Service (gnome-keyring, KeePassXC…) so tokens are encrypted.
 if (process.platform === "linux" && !app.commandLine.hasSwitch("password-store")) app.commandLine.appendSwitch("password-store", "gnome-libsecret");
 
+/**
+ * One app per sign-in. `opportunity-nav --quit` asks the running app to quit the
+ * normal way (helper stopped, windows closed), so an install can replace its
+ * files without killing it: signalling all its processes at once makes Chromium
+ * abort with a core dump. Launching it again shows the open window instead.
+ * Smoke checks run beside the real app, so they skip the lock.
+ */
+const quitRequested = (argv: string[]) => argv.includes("--quit");
+let leaving = false;
+if (process.env.OPNAV_SMOKE !== "1") {
+  // Without the lock another copy is running and has been handed our argv; with it and --quit, nothing was running.
+  if (!app.requestSingleInstanceLock() || quitRequested(process.argv)) {
+    leaving = true;
+    app.exit(0);
+  }
+  app.on("second-instance", (_e, argv) => {
+    if (quitRequested(argv)) return app.quit();
+    if (!win) return open(load());
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
+}
+
 interface Config {
   serverUrl: string;
   uiToken: string; // encrypted, base64
@@ -173,6 +197,7 @@ function menu() {
 }
 
 app.whenReady().then(async () => {
+  if (leaving) return;
   menu();
   const raw = load();
   const c = raw && raw.serverUrl && raw.uiToken ? raw : null;

@@ -44,7 +44,10 @@ On a Mac, `deploy/install-server-macos.sh` does all of this. It also runs the se
 
 ```sh
 npm run dist -w @opnav/desktop    # builds a .dmg / AppImage into apps/desktop/release
+npm run install:linux -w @opnav/desktop    # Linux: build and install to ~/.local/share/opportunity-nav/desktop
 ```
+
+To update a running app on Linux, use `install:linux`: it asks the app to quit (`opportunity-nav --quit`), waits, replaces the files and starts it again. Don't `pkill` it: signalling all of its processes at once makes Electron abort with a core dump.
 
 Open it and paste the sign-in link. Leave **Use this machine's agents** on, and it connects the helper for you.
 
