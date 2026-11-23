@@ -91,6 +91,7 @@ export interface TreeNode {
   defaultProvider: string | null;
   defaultModel: string | null;
   defaultLocation: "local" | "cloud" | null;
+  defaultNeeds: Need[];
   statusLine: string | null;
 }
 
@@ -134,3 +135,13 @@ export function until(d: string | Date | null | undefined): string {
   if (h) return `${h}h ${m}m`;
   return `${m}m`;
 }
+
+/** What a job can need from a machine, besides the agent and the repo. */
+export type Need = "docker" | "database";
+export const NEEDS: { id: Need; name: string }[] = [
+  { id: "docker", name: "Docker" },
+  { id: "database", name: "a test database" },
+];
+export const needsText = (needs: string[]) => needs.map((n) => NEEDS.find((x) => x.id === n)?.name ?? n).join(" and ");
+/** Agents whose models can run on the machine itself; the rest are cloud only. */
+export const LOCAL_MODEL_PROVIDERS = ["ollama", "mlx"];

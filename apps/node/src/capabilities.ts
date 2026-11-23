@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { MachineTool } from "@opnav/shared";
 import type { Checkout, ProviderCapability } from "@opnav/shared";
 import { command, executable, localPath } from "./system.ts";
 import type { System } from "./system.ts";
@@ -60,4 +61,27 @@ export async function checkouts(sys: System, roots: string[], maxDepth: number):
   }
   for (const root of new Set(roots.map(value => localPath(sys, value)))) await scan(root, 0);
   return [...found.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * What this machine has for jobs that need more than an agent and a repo.
+ * docker = a running Docker engine; database = a Postgres accepting
+ * connections here. The machine's owner can say it outright with
+ * OPNAV_MACHINE_TOOLS ("docker,database", or "none").
+ */
+export async function machineTools(sys: System): Promise<MachineTool[]> {
+  const declared = sys.env.OPNAV_MACHINE_TOOLS?.trim();
+  if (declared !== undefined && declared !== "") {
+    const names = declared.toLowerCase().split(/[\s,]+/);
+    return MachineTool.options.filter(tool => names.includes(tool));
+  }
+  const [docker, pgIsReady] = await Promise.all([executable(sys, ["docker"]), executable(sys, ["pg_isready"])]);
+  const [engine, postgres] = await Promise.all([
+    docker ? command(sys, docker, ["info", "--format", "{{.ServerVersion}}"]) : "",
+    pgIsReady ? command(sys, pgIsReady, []) : "",
+  ]);
+  const tools: MachineTool[] = [];
+  if (engine) tools.push("docker");
+  if (postgres) tools.push("database");
+  return tools;
 }

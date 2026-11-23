@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ago, api, PRIORITIES, PROVIDERS, providerName, type Priority, type TreeNode } from "./api.ts";
+import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, providerName, type Need, type Priority, type TreeNode } from "./api.ts";
 
 export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: {
   node: TreeNode;
@@ -61,11 +61,13 @@ function EditForm({ node, patch, onArchived }: { node: TreeNode; patch: (b: obje
     title: node.title, notes: node.notes ?? "", repoRemote: node.repoRemote ?? "", statusLine: node.statusLine ?? "",
     defaultProvider: node.defaultProvider ?? "", defaultModel: node.defaultModel ?? "", defaultLocation: node.defaultLocation ?? "",
   });
+  const [needs, setNeeds] = useState<Need[]>(node.defaultNeeds ?? []);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
   const save = () =>
     patch({
       title: f.title, notes: f.notes || null, repoRemote: f.repoRemote || null, statusLine: f.statusLine || null,
       defaultProvider: f.defaultProvider || null, defaultModel: f.defaultModel || null, defaultLocation: f.defaultLocation || null,
+      defaultNeeds: needs,
     });
   return (
     <form className="edit" onSubmit={(e) => { e.preventDefault(); void save(); }}>
@@ -88,6 +90,9 @@ function EditForm({ node, patch, onArchived }: { node: TreeNode; patch: (b: obje
           </select>
         </label>
       </div>
+      {node.kind !== "area" && (
+        <div className="needs-pick">Jobs here need <NeedsPicker value={needs} onChange={setNeeds} /></div>
+      )}
       <label>Notes<textarea rows={3} value={f.notes} onChange={set("notes")} /></label>
       <div className="row-buttons">
         <button type="submit" className="primary">Save</button>
@@ -104,6 +109,9 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
   const [model, setModel] = useState(node.defaultModel ?? "");
   const [location, setLocation] = useState(node.defaultLocation ?? "");
   const [runner, setRunner] = useState<"direct" | "cloudroom">("direct");
+  const [needs, setNeeds] = useState<Need[]>(node.defaultNeeds ?? []);
+  const localModels = LOCAL_MODEL_PROVIDERS.includes(provider);
+  useEffect(() => { if (!localModels && location === "local") setLocation(""); }, [localModels, location]);
   const [busy, setBusy] = useState(false);
   // Machines that can hand jobs to Cloudroom, and which agents they can run there.
   const [cloudroom, setCloudroom] = useState<string[]>([]);
@@ -121,7 +129,7 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
     setBusy(true);
     try {
       const j = await api("POST", "/api/jobs", { nodeId: node.id, prompt, provider, model: model || undefined,
-        location: inCloudroom ? "cloud" : location || undefined, runner });
+        location: inCloudroom ? "cloud" : location || undefined, runner, needs });
       onStarted(j.id);
     } catch (e) {
       onError((e as Error).message);
@@ -142,7 +150,7 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
           <select value={location} onChange={(e) => setLocation(e.target.value)} aria-label="Model location">
             <option value="">Default</option>
             <option value="cloud">Cloud model</option>
-            <option value="local">Local model</option>
+            {localModels && <option value="local">Local model</option>}
           </select>
         )}
         {cloudroom.length > 0 && (
@@ -152,6 +160,7 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
             <option value="cloudroom" disabled={!cloudroom.includes(provider)}>In Cloudroom's cloud{cloudroom.includes(provider) ? "" : " (not for this agent)"}</option>
           </select>
         )}
+        {!inCloudroom && <span className="needs-pick muted" title="Only a machine that has these takes the job.">Needs <NeedsPicker value={needs} onChange={setNeeds} /></span>}
         <span className="spacer" />
         <button type="submit" className="primary" disabled={busy || !prompt.trim()}>Start</button>
       </div>
@@ -174,10 +183,25 @@ function RecentJobs({ nodeId, onOpenJob }: { nodeId: string; onOpenJob: (id: str
         {jobs.slice(0, 8).map((j) => (
           <li key={j.id}>
             <button className="link" onClick={() => onOpenJob(j.id)}>{j.title}</button>
-            <span className="muted"> · {j.status} · {providerName(j.provider)} · {ago(j.updatedAt)}</span>
+            <span className="muted"> · {j.status} · {providerName(j.provider)}{j.machine ? ` · ${j.machine}` : ""} · {ago(j.updatedAt)}</span>
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+/** Docker and test database checkboxes: what a machine must have to take the job. */
+function NeedsPicker({ value, onChange }: { value: Need[]; onChange: (v: Need[]) => void }) {
+  return (
+    <>
+      {NEEDS.map((n) => (
+        <label key={n.id} className="check-now">
+          <input type="checkbox" checked={value.includes(n.id)}
+            onChange={(e) => onChange(e.target.checked ? [...value, n.id] : value.filter((x) => x !== n.id))} />
+          {n.name}
+        </label>
+      ))}
+    </>
   );
 }

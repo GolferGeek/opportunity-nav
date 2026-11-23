@@ -225,6 +225,37 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal(done.cloudroom.thread, "thr_test1");
   });
 
+  test("needs and location: a job that needs Docker or a database only goes to a machine that has them", async () => {
+    // "local" means a model on the machine; Antigravity has none, so say so rather than queue a job that fails.
+    const local = await call(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Review", provider: "agy", location: "local" });
+    assert.equal(local.status, 400);
+    assert.match(local.body.error, /Antigravity runs its models in the cloud/);
+    assert.equal((await call(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "x", provider: "ollama", location: "local" })).status, 200);
+    await sql`update jobs set status = 'cancelled' where provider = 'ollama'`;
+    await sql`update turns set status = 'cancelled' where job_id in (select id from jobs where provider = 'ollama')`;
+
+    const job = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Run the server tests", needs: ["database"] });
+    assert.deepEqual(job.needs, ["database"]);
+    await ok(node, "POST", "/api/node/heartbeat", hb("laptop")); // no tools
+    assert.equal((await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns.length, 0, "the laptop has no database");
+    await ok(node2, "POST", "/api/node/heartbeat", { ...hb("studio"), tools: ["docker", "database"] });
+    const [t] = (await ok(node2, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns;
+    assert.equal(t.job.id, job.id);
+    const seen = await ok(ui, "GET", `/api/jobs/${job.id}`);
+    assert.equal(seen.machine, "studio", "the job says which machine runs it");
+    await ok(node2, "POST", `/api/node/jobs/${job.id}/events`, { leaseId: t.leaseId, events: [{ seq: 0, at: now(), type: "result", summary: "ok" }] });
+
+    // A project default applies when the job doesn't say.
+    await ok(ui, "PATCH", `/api/tree/${projectId}`, { defaultNeeds: ["docker"] });
+    const d = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Build the image" });
+    assert.deepEqual(d.needs, ["docker"]);
+    assert.equal((await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns.length, 0);
+    const plain = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Edit the README", needs: [] });
+    assert.equal((await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns[0].job.id, plain.id, "a job that needs nothing goes anywhere");
+    await ok(ui, "PATCH", `/api/tree/${projectId}`, { defaultNeeds: [] });
+    for (const j of [d, plain]) await ok(ui, "POST", `/api/jobs/${j.id}/cancel`);
+  });
+
   test("usage: deduped by account; a failure never wipes a good reading", async () => {
     const acct = key("claude-account-123");
     const good = {
@@ -314,6 +345,12 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     const bad = await rpc({ action: "add_item", input: { parent: "Nope", kind: "item", title: "x" } });
     assert.match(bad.error.message, /Nothing in the tree is called "Nope"/);
     assert.equal((await call(node, "POST", "/a2a", {})).status, 403);
+    const ms = (await rpc({ action: "list_machines", input: {} })).result.parts[0].data.result;
+    assert.deepEqual(ms.find((m: any) => m.name === "studio").tools, ["docker", "database"]);
+    const pinned = (await rpc({ action: "start_job", input: { item: "golfer geek / opportunity nav", prompt: "On the studio", machine: "Studio" } })).result.parts[0].data.result;
+    const [row] = await sql`select n.name from jobs j join nodes n on n.id = j.node_id where j.id = ${pinned.id}`;
+    assert.equal(row!.name, "studio");
+    await ok(ui, "POST", `/api/jobs/${pinned.id}/cancel`);
   });
 
   test("MCP: lists the same tools", async () => {

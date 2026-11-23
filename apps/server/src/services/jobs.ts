@@ -5,7 +5,9 @@ import {
   type JobEvent,
   type Turn,
   LEASE_SECONDS,
+  LOCAL_MODEL_PROVIDERS,
   Location,
+  MachineTool,
   ProviderId,
   Runner,
 } from "@opnav/shared";
@@ -27,6 +29,8 @@ export const NewJob = z.object({
   model: z.string().optional(),
   location: Location.optional(),
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  /** What it needs from the machine (Docker, a test database); default = the project's. */
+  needs: z.array(MachineTool).optional(),
   /** direct = on a machine; cloudroom = in Cloudroom's cloud, handed over by a machine that has Cloudroom. */
   runner: Runner.optional(),
   /** Pin to a machine. */
@@ -44,7 +48,8 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
   if (!project.repoRemote) throw new HttpError(400, `"${project.title}" has no repo yet. Add its git remote first.`);
   const provider = j.provider ?? project.defaultProvider;
   if (!provider) throw new HttpError(400, "Pick an agent for this job, or set a default on the project.");
-  const location = j.location ?? project.defaultLocation ?? (provider === "ollama" || provider === "mlx" ? "local" : "cloud");
+  const location = jobLocation(provider, j.location, project.defaultLocation);
+  const needs = [...new Set(j.needs ?? project.defaultNeeds ?? [])];
   const runner = j.runner ?? "direct";
   if (runner === "cloudroom") {
     if (!CLOUDROOM_PROVIDERS.has(provider)) throw new HttpError(400, `Cloudroom can run Claude, Codex or Antigravity, not ${provider}.`);
@@ -53,14 +58,37 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
   const title = j.title ?? j.prompt.split("\n")[0]!.slice(0, 80);
   return sql.begin(async (tx) => {
     const [job] = await tx`
-      insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by)
+      insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by, needs)
       values (${userId}, ${project.id}, ${title}, ${j.prompt}, ${provider}, ${j.model ?? project.defaultModel ?? null},
-              ${location}, ${j.effort ?? null}, ${runner}, 'queued', ${j.machineId ?? null}, ${j.machineId != null}, ${j.issueUrl ?? null}, ${createdBy})
+              ${location}, ${j.effort ?? null}, ${runner}, 'queued', ${j.machineId ?? null}, ${j.machineId != null}, ${j.issueUrl ?? null}, ${createdBy},
+              ${tx.json(needs)})
       returning *`;
     await tx`insert into turns (job_id, kind, status) values (${job!.id}, 'start', 'queued')`;
     return jobRow(job);
   });
 }
+
+/**
+ * Where the model runs. Only local-model providers (Ollama, MLX) run "local";
+ * the rest are cloud only. Agents sometimes send "local" meaning "on my
+ * machine", which no worker can run, so say so instead of queueing a job that
+ * fails. A project default that doesn't fit the agent is ignored.
+ */
+export function jobLocation(provider: string, asked: Location | undefined, projectDefault: Location | null | undefined): Location {
+  const localModels = LOCAL_MODEL_PROVIDERS.includes(provider as ProviderId);
+  const fits = (l: Location | null | undefined) => l === "local" ? localModels : l === "cloud";
+  if (asked) {
+    if (!fits(asked) && !localModels) {
+      throw new HttpError(400, `${providerLabel(provider)} runs its models in the cloud, so its location is "cloud". To choose the machine, pin the job to it.`);
+    }
+    return asked;
+  }
+  if (fits(projectDefault)) return projectDefault!;
+  return localModels ? "local" : "cloud";
+}
+
+const PROVIDER_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", gemini: "Gemini", cursor: "Cursor", grokbot: "Grok Bot", grok: "Grok" };
+const providerLabel = (p: string) => PROVIDER_LABELS[p] ?? p;
 
 export function jobRow(r: any) {
   return {
@@ -77,6 +105,9 @@ export function jobRow(r: any) {
     cloudroom: r.runner === "cloudroom" ? { thread: (r.provider_session_id as string | null) ?? null, branch: `opnav/${String(r.id).slice(0, 8)}` } : null,
     status: r.status as string,
     machineId: r.node_id as string | null,
+    /** The machine that has (or last had) it, by name. */
+    machine: (r.machine as string | null | undefined) ?? null,
+    needs: (r.needs ?? []) as string[],
     lastProgress: r.last_progress as string | null,
     summary: r.summary as string | null,
     createdBy: r.created_by as string,
@@ -88,8 +119,8 @@ export function jobRow(r: any) {
 
 /** Hand out queued turns this machine can run: right provider, and a checkout of the project's repo. */
 export async function claim(sql: Sql, userId: string, machineId: string, req: ClaimRequest): Promise<Turn[]> {
-  const [machine] = await sql<{ checkouts: { path: string; remote?: string }[] }[]>`
-    select checkouts from nodes where id = ${machineId} and user_id = ${userId}`;
+  const [machine] = await sql<{ checkouts: { path: string; remote?: string }[]; tools: string[] }[]>`
+    select checkouts, tools from nodes where id = ${machineId} and user_id = ${userId}`;
   if (!machine) throw new HttpError(401, "Unknown machine; send a heartbeat first.");
   const checkoutFor = new Map<string, string>();
   for (const c of machine.checkouts ?? []) if (c.remote && !checkoutFor.has(normaliseRemote(c.remote))) checkoutFor.set(normaliseRemote(c.remote), c.path);
@@ -105,6 +136,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
           or (j.runner = 'cloudroom' and j.provider in ${tx(req.cloudroomProviders.length ? req.cloudroomProviders : ["-"])}))
         and p.repo_remote in ${tx(remotes)}
         and (j.node_id is null or j.node_id = ${machineId})
+        and (j.runner = 'cloudroom' or j.needs <@ ${tx.json(machine.tools ?? [])}::jsonb)
       order by t.created_at
       limit ${req.max}
       for update of t, j skip locked`;
@@ -316,7 +348,8 @@ export async function answerQuestion(sql: Sql, userId: string, questionId: strin
 }
 
 export async function getJob(db: Db, userId: string, jobId: string) {
-  const [job] = await db`select * from jobs where id = ${jobId} and user_id = ${userId}`;
+  const [job] = await db`select j.*, n.name as machine from jobs j left join nodes n on n.id = j.node_id
+    where j.id = ${jobId} and j.user_id = ${userId}`;
   if (!job) throw new HttpError(404, "No such job.");
   const events = await db`select type, payload, at from job_events where job_id = ${jobId} order by at, seq`;
   const questions = await db`select q.*, a.text as answer from questions q left join answers a on a.question_id = q.id

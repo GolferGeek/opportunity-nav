@@ -5,7 +5,7 @@ import { ClaimResponse, DEFAULT_HEARTBEAT_INTERVAL_SEC, DEFAULT_USAGE_INTERVAL_S
   NODE, NodeHeartbeat, NodeHeartbeatResponse } from "@opnav/shared";
 import type { ProviderCapability } from "@opnav/shared";
 import { nodeApi } from "./api.ts";
-import { capabilities, checkouts } from "./capabilities.ts";
+import { capabilities, checkouts, machineTools } from "./capabilities.ts";
 import { cloudroomDetector, runCloudroom } from "./cloudroom.ts";
 import { handoffReport } from "./handoff.ts";
 import { runTurn } from "./lease.ts";
@@ -88,15 +88,16 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   const tasks = [
     loop("send a heartbeat", async () => {
       handoff = configured && await access(configured).then(() => configured, () => undefined);
-      const [detected, discovered, models, cloudroom] = await Promise.all([
+      const [detected, discovered, models, cloudroom, tools] = await Promise.all([
         capabilities(sys), checkouts(sys, roots, options.checkoutDepth ?? 4), ollamaModels(sys, transport, signal), detectCloudroom(),
+        machineTools(sys),
       ]);
       if (models.length) detected.push({
         provider: "ollama", canRunJobs: true, signedIn: true, locations: ["local"], models,
       });
       const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
         arch: arch(), autonomy, helperVersion: version, providers: detected, checkouts: discovered,
-        cloudroom: cloudroom && { providers: cloudroom.providers },
+        cloudroom: cloudroom && { providers: cloudroom.providers }, tools,
         handoff: handoff ? { dir: handoff } : undefined, activeJobIds: activeJobId ? [activeJobId] : [] });
       const answer = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
       time = answer;

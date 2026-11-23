@@ -7,6 +7,7 @@ import type { TestContext } from "node:test";
 import { createCipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { readUsage } from "../src/index.ts";
 import { keychainSecret, searchPath, system } from "../src/system.ts";
+import { machineTools } from "../src/capabilities.ts";
 
 test("a helper started with launchd's bare PATH still looks where npm and Homebrew install CLIs", () => {
   assert.equal(searchPath("/usr/bin:/bin:/usr/sbin:/sbin", "/Users/me", "darwin"),
@@ -344,4 +345,20 @@ test("an account learned from a good reading keeps its key when the next reading
   assert.equal(stale.status, "stale");
   assert.equal(stale.accountKey, fresh.accountKey);
   assert.deepEqual(stale.windows.map(w => w.used), [50], "last good reading is kept");
+});
+
+test("a machine reports Docker and a database only when they answer, or what its owner declares", async t => {
+  const home = await mkdtemp(join(tmpdir(), "opnav-tools-test-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const bin = join(home, "bin");
+  await mkdir(bin);
+  const sys = (env: NodeJS.ProcessEnv) => system({ home, platform: "linux", env: { PATH: bin, ...env } });
+  assert.deepEqual(await machineTools(sys({})), [], "nothing installed");
+  await writeFile(join(bin, "docker"), "#!/bin/sh\nexit 1\n");
+  await writeFile(join(bin, "pg_isready"), "#!/bin/sh\necho '/tmp:5432 - accepting connections'\n");
+  await chmod(join(bin, "docker"), 0o755);
+  await chmod(join(bin, "pg_isready"), 0o755);
+  assert.deepEqual(await machineTools(sys({})), ["database"], "a docker CLI without a running engine doesn't count");
+  assert.deepEqual(await machineTools(sys({ OPNAV_MACHINE_TOOLS: "none" })), []);
+  assert.deepEqual(await machineTools(sys({ OPNAV_MACHINE_TOOLS: "docker, database" })), ["docker", "database"]);
 });

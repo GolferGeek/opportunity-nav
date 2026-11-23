@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { Location, ProviderId, Runner } from "@opnav/shared";
+import { Location, MachineTool, ProviderId, Runner } from "@opnav/shared";
 import type { Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { answerQuestion, cancelJob, createJob, getJob } from "./jobs.ts";
 import { createNode, listTree, pathOf, TreeNodePatch, updateNode, type TreeNode } from "./tree.ts";
+import { listMachines } from "./machines.ts";
 import { dashboard, happening } from "./views.ts";
 import { messageGrokBot } from "./outbound.ts";
 
@@ -13,6 +14,15 @@ import { messageGrokBot } from "./outbound.ts";
  * or by a title path like "Golfer Geek / Opportunity Nav" (case-insensitive),
  * which is what a voice or chat request naturally gives.
  */
+
+/** A machine by name, case-insensitive. A reinstalled machine can have older records with the same name; the one seen last wins. */
+export async function machineByName(sql: Sql, userId: string, name: string): Promise<string> {
+  const [m] = await sql<{ id: string }[]>`select n.id from nodes n join api_tokens t on t.id = n.token_id
+    where n.user_id = ${userId} and t.revoked_at is null and (lower(n.name) = lower(${name.trim()}) or n.id::text = ${name.trim()})
+    order by n.last_seen_at desc limit 1`;
+  if (!m) throw new HttpError(404, `No machine is called "${name}".`);
+  return m.id;
+}
 
 const Ref = z.string().min(1).describe('Item id, or a title path like "Golfer Geek / Opportunity Nav"');
 
@@ -77,26 +87,46 @@ export const actions = {
       return updateNode(sql, userId, node.id, changes);
     },
   },
+  list_machines: {
+    description: "The person's machines: which are online, which agents each can run jobs with, what else it has (docker, database), and whether it can hand jobs to Cloudroom's cloud.",
+    input: z.object({}),
+    run: async (sql: Sql, userId: string) => {
+      const seen = new Set<string>();
+      return (await listMachines(sql, userId))
+        .filter((m) => !m.revoked)
+        .sort((a, b) => new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime())
+        .filter((m) => !seen.has(m.name.toLowerCase()) && seen.add(m.name.toLowerCase()))
+        .map((m) => ({
+          name: m.name, online: m.online, lastSeenAt: m.lastSeenAt,
+          runsJobsWith: (m.providers as any[]).filter((p) => p.canRunJobs && p.signedIn).map((p) => p.provider),
+          tools: m.tools, cloudroom: m.cloudroom?.providers ?? [],
+        }));
+    },
+  },
   answer_question: {
     description: "Answer a question an agent asked the person. The job resumes where it stopped.",
     input: z.object({ questionId: z.string().uuid(), answer: z.string().min(1) }),
     run: (sql: Sql, userId: string, i: any, by: string) => answerQuestion(sql, userId, i.questionId, i.answer, by),
   },
   start_job: {
-    description: "Start an agent on a task in a project. Provider, model and local-or-cloud default to the project's settings. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch).",
+    description: "Start an agent on a task in a project. Provider, model and location default to the project's settings. Any online machine with the agent and the repo picks it up; set machine to choose one, and needs if it must have Docker or a test database. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch).",
     input: z.object({
       item: Ref.describe("The project (or an item inside it) to work on"),
       prompt: z.string().min(1),
       title: z.string().optional(),
       provider: ProviderId.optional(),
       model: z.string().optional(),
-      location: Location.optional(),
+      location: Location.optional().describe("Where the model runs: cloud for Claude, Codex and Antigravity; local only for Ollama or MLX models. Not which machine; use machine for that."),
       effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
       runner: Runner.optional().describe("direct (default): on one of the person's machines. cloudroom: in Cloudroom's cloud."),
+      machine: z.string().optional().describe("Run it on this machine (its name, e.g. the one list_machines shows). Default: any machine that can."),
+      needs: z.array(MachineTool).optional().describe("What the machine must have: docker, database (a local Postgres for tests). Default: the project's."),
     }),
     run: async (sql: Sql, userId: string, i: any, by: string) => {
       const node = await resolveRef(sql, userId, i.item);
-      return createJob(sql, userId, { ...i, nodeId: node.id }, by);
+      const { machine, ...job } = i;
+      const machineId = machine ? await machineByName(sql, userId, machine) : undefined;
+      return createJob(sql, userId, { ...job, nodeId: node.id, machineId }, by);
     },
   },
   get_job: {

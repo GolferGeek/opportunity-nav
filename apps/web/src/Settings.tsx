@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ago, api, providerName, usePoll } from "./api.ts";
+import { ago, api, providerName, usePoll, needsText } from "./api.ts";
 
 export function Settings({ onClose, onError }: { onClose: () => void; onError: (m: string) => void }) {
   const machines = usePoll<any[]>("/api/machines", 10_000);
@@ -29,10 +29,11 @@ export function Settings({ onClose, onError }: { onClose: () => void; onError: (
           <li key={m.id} className="card">
             <div><span className={`dot ${m.online ? "running" : "offline"}`} /> <strong>{m.name}</strong> <span className="muted">{m.platform} · seen {ago(m.lastSeenAt)}</span></div>
             <div className="muted">
-              {m.providers.filter((p: any) => p.signedIn).map((p: any) => providerName(p.provider)).join(", ") || "No agents signed in"}
+              {runsJobs(m) || "No agents signed in"}
               {m.checkouts.length ? ` · ${m.checkouts.length} repos` : ""}{m.handoff ? " · handoff watcher" : ""}
               {m.cloudroom ? ` · Cloudroom (${m.cloudroom.providers.map((p: string) => providerName(p)).join(", ") || "no agents connected"})` : ""}
               {m.autonomy === "full" ? " · workers run without a sandbox" : ""}
+              {m.tools?.length ? ` · has ${needsText(m.tools)}` : ""}
             </div>
           </li>
         ))}
@@ -68,4 +69,12 @@ export function Settings({ onClose, onError }: { onClose: () => void; onError: (
       </ul>
     </aside>
   );
+}
+
+/** "Runs jobs: Claude, Codex · usage only: Cursor" */
+function runsJobs(m: any): string {
+  const signed = m.providers.filter((p: any) => p.signedIn);
+  const jobs = signed.filter((p: any) => p.canRunJobs).map((p: any) => providerName(p.provider));
+  const usage = signed.filter((p: any) => !p.canRunJobs).map((p: any) => providerName(p.provider));
+  return [jobs.length ? `Runs jobs: ${jobs.join(", ")}` : "", usage.length ? `usage only: ${usage.join(", ")}` : ""].filter(Boolean).join(" · ");
 }

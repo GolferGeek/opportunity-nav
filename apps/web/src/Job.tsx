@@ -1,4 +1,4 @@
-import { ago, api, providerName, usePoll } from "./api.ts";
+import { ago, api, needsText, providerName, usePoll } from "./api.ts";
 import { Activity } from "./External.tsx";
 
 export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onClose: () => void; onChanged: () => void; onError: (m: string) => void }) {
@@ -19,7 +19,8 @@ export function JobPanel({ id, onClose, onChanged, onError }: { id: string; onCl
       {!job ? <p className="muted">Loading…</p> : (
         <>
           <div className="facts muted">
-            <span className={`dot ${job.status}`} /> {job.status} · {providerName(job.provider)}{job.model ? ` · ${job.model}` : ""} · {job.cloudroom ? "in Cloudroom's cloud" : job.location}
+            <span className={`dot ${job.status}`} /> {job.status} · {providerName(job.provider)}{job.model ? ` · ${job.model}` : ""} · {job.cloudroom ? "in Cloudroom's cloud" : job.location}{job.machine ? ` · ${job.cloudroom ? "handed over by" : "on"} ${job.machine}` : ""}
+            {job.needs?.length ? ` · needs ${needsText(job.needs)}` : ""}
             {job.tokens && (job.tokens.input || job.tokens.output) ? ` · ${(job.tokens.input + job.tokens.output).toLocaleString()} tokens` : ""}
             {job.costUsd ? ` · $${job.costUsd.toFixed(2)}` : ""} · started by {job.createdBy} {ago(job.createdAt)}
           </div>

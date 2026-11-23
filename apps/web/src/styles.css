@@ -221,3 +221,4 @@ button.on-toggle { background: var(--accent-soft); border-color: var(--accent); 
 
 .title-row .priority { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .title-row .priority select { padding: 2px 4px; font-size: 12px; }
+.needs-pick { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }

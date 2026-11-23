@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Location, ProviderId } from "@opnav/shared";
+import { Location, MachineTool, ProviderId } from "@opnav/shared";
 import type { Db } from "../db.ts";
 import { HttpError } from "../errors.ts";
 
@@ -17,6 +17,8 @@ export interface TreeNode {
   defaultProvider: string | null;
   defaultModel: string | null;
   defaultLocation: "local" | "cloud" | null;
+  /** What this project's jobs need from a machine by default (docker, database). */
+  defaultNeeds: MachineTool[];
   statusLine: string | null;
 }
 
@@ -36,6 +38,7 @@ export const NewTreeNode = z.object({
   defaultProvider: ProviderId.optional(),
   defaultModel: z.string().optional(),
   defaultLocation: Location.optional(),
+  defaultNeeds: z.array(MachineTool).optional(),
   priority: Priority.optional(),
   /** Insert before this sibling; default = last. */
   beforeId: z.string().uuid().optional(),
@@ -54,6 +57,7 @@ export const TreeNodePatch = z.object({
   defaultProvider: ProviderId.nullable().optional(),
   defaultModel: z.string().nullable().optional(),
   defaultLocation: Location.nullable().optional(),
+  defaultNeeds: z.array(MachineTool).optional(),
   statusLine: z.string().max(300).nullable().optional(),
   archived: z.boolean().optional(),
 });
@@ -80,6 +84,7 @@ const row = (r: any): TreeNode => ({
   defaultProvider: r.default_provider,
   defaultModel: r.default_model,
   defaultLocation: r.default_location,
+  defaultNeeds: r.default_needs ?? [],
   statusLine: r.status_line,
 });
 
@@ -152,10 +157,10 @@ export async function createNode(db: Db, userId: string, input: z.input<typeof N
   if (n.parentId) await getNode(db, userId, n.parentId);
   const position = await positionFor(db, userId, n.parentId, n.beforeId);
   const [r] = await db`
-    insert into tree_nodes (user_id, parent_id, kind, title, notes, position, repo_remote, default_provider, default_model, default_location, priority)
+    insert into tree_nodes (user_id, parent_id, kind, title, notes, position, repo_remote, default_provider, default_model, default_location, priority, default_needs)
     values (${userId}, ${n.parentId}, ${n.kind}, ${n.title}, ${n.notes ?? null}, ${position},
             ${n.repoRemote ? normaliseRemote(n.repoRemote) : null}, ${n.defaultProvider ?? null}, ${n.defaultModel ?? null}, ${n.defaultLocation ?? null},
-            ${n.priority ?? "medium"})
+            ${n.priority ?? "medium"}, ${db.json([...new Set(n.defaultNeeds ?? [])])})
     returning *`;
   return row(r);
 }
@@ -170,6 +175,7 @@ export async function updateNode(db: Db, userId: string, id: string, input: z.in
   if (p.defaultProvider !== undefined) set.default_provider = p.defaultProvider;
   if (p.defaultModel !== undefined) set.default_model = p.defaultModel;
   if (p.defaultLocation !== undefined) set.default_location = p.defaultLocation;
+  if (p.defaultNeeds !== undefined) set.default_needs = db.json([...new Set(p.defaultNeeds)]);
   if (p.statusLine !== undefined) set.status_line = p.statusLine;
   if (p.priority !== undefined) set.priority = p.priority;
   if (p.archived !== undefined) set.archived_at = p.archived ? new Date() : null;

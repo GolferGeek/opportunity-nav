@@ -125,8 +125,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       const rows = scope
         ? await sql`with recursive sub as (select id from tree_nodes where id = ${scope} and user_id = ${req.principal.userId}
               union all select t.id from tree_nodes t join sub on t.parent_id = sub.id)
-            select * from jobs where project_id in (select id from sub) order by updated_at desc limit 50`
-        : await sql`select * from jobs where user_id = ${req.principal.userId} order by updated_at desc limit 50`;
+            select j.*, n.name as machine from jobs j left join nodes n on n.id = j.node_id
+            where j.project_id in (select id from sub) order by j.updated_at desc limit 50`
+        : await sql`select j.*, n.name as machine from jobs j left join nodes n on n.id = j.node_id
+            where j.user_id = ${req.principal.userId} order by j.updated_at desc limit 50`;
       return rows.map(jobRow);
     });
     r.get("/api/jobs/:id", async (req) => getJob(sql, req.principal.userId, id(req)));
