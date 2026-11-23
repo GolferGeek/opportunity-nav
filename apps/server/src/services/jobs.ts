@@ -73,16 +73,8 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
   const location = jobLocation(provider, j.location, project.defaultLocation);
   const needs = [...new Set(j.needs ?? project.defaultNeeds ?? [])];
   const runner = j.runner ?? "direct";
-  if (runner === "cloudroom") {
-    if (!CLOUDROOM_PROVIDERS.has(provider)) throw new HttpError(400, `Cloudroom can run Claude, Codex or Antigravity, not ${provider}.`);
-    if (location === "local") throw new HttpError(400, "Cloudroom runs in the cloud, so it can't use a local model.");
-  }
-  if (runner === "claude-cloud") {
-    if (provider !== "claude") throw new HttpError(400, `Claude's cloud runs only Claude, not ${providerLabel(provider)}.`);
-    if (location === "local") throw new HttpError(400, "Claude's cloud can't use a local model.");
-  }
+  checkJobShape(provider, runner, location, j.localModel ?? false);
   const title = j.title ?? j.prompt.split("\n")[0]!.slice(0, 80);
-  if (j.localModel && runner !== "direct") throw new HttpError(400, "A job that uses the machine's local models has to run on the machine, not in a cloud.");
   if (j.key) {
     const [dup] = await sql`select id, status from jobs where user_id = ${userId} and lower(key) = lower(${j.key})`;
     if (dup) throw new HttpError(409, `"${j.key}" is already in Opportunity Nav (job ${dup.id}, ${dup.status}).`);
@@ -104,6 +96,19 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
     if (e?.code === "23505" && j.key) throw new HttpError(409, `"${j.key}" is already in Opportunity Nav.`);
     throw e;
   });
+}
+
+/** Refuse agent, runner, location and local-model combinations no machine can run. */
+export function checkJobShape(provider: string, runner: string, location: string, localModel: boolean) {
+  if (runner === "cloudroom") {
+    if (!CLOUDROOM_PROVIDERS.has(provider)) throw new HttpError(400, `Cloudroom can run Claude, Codex or Antigravity, not ${provider}.`);
+    if (location === "local") throw new HttpError(400, "Cloudroom runs in the cloud, so it can't use a local model.");
+  }
+  if (runner === "claude-cloud") {
+    if (provider !== "claude") throw new HttpError(400, `Claude's cloud runs only Claude, not ${providerLabel(provider)}.`);
+    if (location === "local") throw new HttpError(400, "Claude's cloud can't use a local model.");
+  }
+  if (localModel && runner !== "direct") throw new HttpError(400, "A job that uses the machine's local models has to run on the machine, not in a cloud.");
 }
 
 /**

@@ -685,6 +685,11 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     await finish(laptop, aoTurn);
     assert.match(await actFails("update_backlog_item", { jobId: ao.id, changes: { held: true } }), /can't be changed now/);
 
+    const shape = await act("add_to_backlog", { repo: "github.com/example/lib", prompt: "Shape", localModel: true, held: true });
+    assert.match(await actFails("update_backlog_item", { jobId: shape.id, changes: { runner: "cloudroom" } }), /local models has to run on the machine/);
+    assert.match(await actFails("update_backlog_item", { jobId: shape.id, changes: { localModel: false, runner: "claude-cloud", provider: "codex" } }), /only Claude/);
+    await act("cancel_job", { jobId: shape.id });
+
     // Waiting on a handoff brief that's still in the old queue.
     const viaBrief = await act("add_to_backlog", { repo: "github.com/example/lib", prompt: "After a brief", after: ["2026-11-23-old-brief"] });
     assert.equal((await claimL()).turns.length, 0);

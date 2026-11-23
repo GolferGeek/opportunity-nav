@@ -3,7 +3,7 @@ import { Location, MachineTool, ProviderId, Runner } from "@opnav/shared";
 import type { Db, Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { listTree, normaliseRemote, pathOf } from "./tree.ts";
-import { jobRow } from "./jobs.ts";
+import { checkJobShape, jobLocation, jobRow } from "./jobs.ts";
 
 /**
  * The backlog: one ranked list of jobs that machines pull from by themselves.
@@ -279,6 +279,12 @@ export async function updateBacklogItem(sql: Sql, userId: string, jobId: string,
       set.node_id = changes.machineId;
       set.pinned = changes.machineId != null;
     }
+    // The result has to be a job some machine can run, as when it was added.
+    const provider = (changes.provider ?? j.provider) as string;
+    const location = changes.location !== undefined || changes.provider !== undefined
+      ? jobLocation(provider, changes.location ?? (changes.provider !== undefined ? undefined : j.location), null) : j.location;
+    if (location !== j.location) set.location = location;
+    checkJobShape(provider, (changes.runner ?? j.runner ?? "direct") as string, location, changes.localModel ?? Boolean(j.local_model));
     if (Object.keys(set).length) {
       set.updated_at = new Date();
       await tx`update jobs set ${tx(set)} where id = ${jobId}`;
