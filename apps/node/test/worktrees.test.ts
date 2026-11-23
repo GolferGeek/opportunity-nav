@@ -7,8 +7,8 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import type { JobSpec } from "@opnav/shared";
 import { system } from "../src/system.ts";
-import { agyOutcome, runWorker, workerArgs } from "../src/worker.ts";
-import { openWorktree, pruneWorktrees } from "../src/worktrees.ts";
+import { agyOutcome, pushHold, runWorker, workerArgs } from "../src/worker.ts";
+import { gitReason, openWorktree, pruneWorktrees, worktreeEnv } from "../src/worktrees.ts";
 import { git, initRepo } from "./fixtures/git.ts";
 
 async function fixture(t: TestContext) {
@@ -238,7 +238,7 @@ test("a worker that can't start says so", async t => {
 });
 
 /** A checkout cloned from a bare origin, and a second clone to move origin on with. */
-async function pushFixture(t: TestContext, agent: (home: string) => string[] = () => []) {
+async function pushFixture(t: TestContext, agent: (home: string) => string[] = () => [], answer: string | null = "Done.") {
   const { sys, home, data, checkout: seed, job } = await fixture(t);
   const origin = join(home, "origin.git");
   git(home, "clone", "--quiet", "--bare", seed, origin);
@@ -256,15 +256,20 @@ async function pushFixture(t: TestContext, agent: (home: string) => string[] = (
     "cat > /dev/null",
     "echo fixed > fix.txt",
     ...agent(home),
-    "echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Done.\"}}'",
+    ...(answer === null ? [] : [`printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: answer } })
+      .replaceAll("'", "'\\''")}'`]),
     "echo '{\"type\":\"turn.completed\",\"usage\":{}}'",
   ].join("\n") + "\n");
   await chmod(worker, 0o755);
   const spec: JobSpec = { ...job, checkoutPath: checkout, provider: "codex", title: "Fix it", push: true };
-  const run = async () => {
+  const run = async (onEvent?: (event: { type: string; text?: string }, cancel: () => void) => void) => {
     const events: { type: string; text?: string }[] = [];
     const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const, job: spec };
-    const outcome = await runWorker(sys, worker, turn, new AbortController().signal, event => events.push(event as any));
+    const controller = new AbortController();
+    const outcome = await runWorker(sys, worker, turn, controller.signal, event => {
+      events.push(event as any);
+      onEvent?.(event as any, () => controller.abort());
+    });
     return { outcome, progress: events.filter(e => e.type === "progress").map(e => e.text!) };
   };
   const moveOrigin = async (file: string, text: string) => {
@@ -274,7 +279,7 @@ async function pushFixture(t: TestContext, agent: (home: string) => string[] = (
     git(other, "commit", "--quiet", "-m", `Elsewhere: ${file}`);
     git(other, "push", "--quiet", "origin", "main");
   };
-  return { sys, data, origin, checkout, spec, run, moveOrigin };
+  return { sys, home, data, origin, checkout, spec, run, moveOrigin };
 }
 
 test("a job that pushes starts from origin's branch and lands its work there", async t => {
@@ -374,4 +379,106 @@ test("a job that pushes publishes nothing when it couldn't start from origin", a
   assert.equal(git(origin, "rev-parse", "main"), before);
   assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
   assert.equal(git(checkout, "show", `${branch}:fix.txt`), "fixed");
+});
+
+test("a job that pushes doesn't rebase merge commits; it pushes its own branch instead", async t => {
+  // The agent's work includes a merge. A rebase would replay it flat and drop anything fixed in the merge.
+  const { origin, spec, run, moveOrigin, sys } = await pushFixture(t, () => [
+    "git add fix.txt && git commit --quiet -m 'Agent fix'",
+    "git checkout --quiet -b side && echo side > side.txt && git add side.txt && git commit --quiet -m Side",
+    "git checkout --quiet - && git merge --quiet --no-ff -m 'Merge side' side && git branch --quiet -D side",
+  ]);
+  await (await openWorktree(sys, spec)).release();
+  await moveOrigin("during.txt", "pushed during the job\n");
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { progress } = await run();
+  assert.equal(progress.at(-1), `main moved on, and the work has merge commits a rebase would lose. Pushed the work to branch ${branch} instead.`);
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "log", "-1", "--format=%s", branch), "Merge side");
+});
+
+test("a job that pushes publishes nothing when its leftovers couldn't be committed", async t => {
+  // A stale index lock makes the helper's commit fail, so a push would leave those changes out.
+  const { origin, spec, run } = await pushFixture(t, () => ['touch "$(git rev-parse --git-dir)/index.lock"']);
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { progress } = await run();
+  assert.equal(progress.at(-1), `Not pushed: the changes left in the worktree couldn't be committed. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+});
+
+test("a job that pushes publishes nothing when it's cancelled after the agent finished", async t => {
+  const { origin, spec, run } = await pushFixture(t);
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  // The cancel arrives while the helper is committing the agent's leftovers.
+  const { progress } = await run((event, cancel) => { if (event.text?.startsWith("Committed")) cancel(); });
+  assert.equal(progress.at(-1), `Not pushed: the job was cancelled. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+});
+
+test("a job that pushes publishes nothing for an empty or unreadable answer", async t => {
+  for (const [answer, why] of [
+    [null, "the agent finished without a final answer."],
+    ["   ", "the agent finished without a final answer."],
+    ["Halfway.\n```opnav-needs-input\n{not json}\n```", "the agent's answer has a question block that couldn't be read."],
+    ["```opnav-needs-input\n{\"question\":\"Which?\"}\n```\nThen I stopped.", "the agent's answer has a question block that couldn't be read."],
+  ] as const) {
+    const { origin, spec, run } = await pushFixture(t, () => [], answer);
+    const before = git(origin, "rev-parse", "main");
+    const { outcome, progress } = await run();
+    assert.equal(outcome.type, "result");
+    assert.equal(progress.at(-1), `Not pushed: ${why} The work is on branch opnav/${spec.id.slice(0, 8)} on this machine.`);
+    assert.equal(git(origin, "rev-parse", "main"), before);
+    assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+  }
+  assert.equal(pushHold("Done.", true, new AbortController().signal), undefined);
+});
+
+test("a job that pushes never pushes to a fork set up as origin's push address", async t => {
+  const { home, origin, checkout, spec, run } = await pushFixture(t);
+  const fork = join(home, "fork.git");
+  git(home, "clone", "--quiet", "--bare", origin, fork);
+  git(checkout, "config", "remote.origin.pushurl", fork);
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { progress } = await run();
+  assert.equal(progress.at(-1), `Not pushed: origin's address isn't only the repo the job started from. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(fork, "rev-parse", "main"), before);
+  assert.equal(git(fork, "branch", "--list", "opnav/*"), "");
+});
+
+test("Git's error text never leaves the machine, only a fixed reason", () => {
+  const fail = (stderr: string, extra: object = {}) => gitReason(Object.assign(new Error("Command failed: git push https://x:ghp_SECRET@example.com/r"), { stderr, ...extra }));
+  assert.equal(fail("remote: Invalid username or token. ghp_SECRET\nfatal: Authentication failed for 'https://ghp_SECRET@github.com/a/b/'"),
+    "origin needs a sign-in this machine can't give without asking");
+  assert.equal(fail("fatal: could not read Username for 'https://github.com': terminal prompts disabled"),
+    "origin needs a sign-in this machine can't give without asking");
+  assert.equal(fail("fatal: unable to access 'https://tok3n@example.com/a/': Could not resolve host: example.com"), "origin couldn't be reached");
+  assert.equal(fail(" ! [rejected]        abc -> main (fetch first)\nerror: failed to push some refs to 'https://tok3n@example.com/a/'"), "origin refused it");
+  assert.equal(fail("opaque-token-abc123 something odd"), "Git failed");
+  assert.equal(fail("", { killed: true, signal: "SIGTERM" }), "Git took too long, perhaps waiting for a sign-in");
+  for (const stderr of ["ghp_SECRET", "tok3n", "opaque-token-abc123"]) assert.ok(!fail(stderr).includes(stderr));
+});
+
+test("Git never asks for a sign-in: no prompt, no askpass, SSH in batch mode", async t => {
+  const { sys, home, checkout, job } = await fixture(t);
+  const env = worktreeEnv(system({ home, env: { ...sys.env, SSH_ASKPASS: "/usr/bin/ssh-askpass", GIT_ASKPASS: "/bin/ask" } }));
+  assert.equal(env.GIT_TERMINAL_PROMPT, "0");
+  assert.equal(env.GIT_ASKPASS, "");
+  assert.equal(env.SSH_ASKPASS, undefined);
+  assert.equal(env.SSH_ASKPASS_REQUIRE, "never");
+  // The fetch a pushing job starts with goes through the user's own ssh command, in batch mode.
+  const log = join(home, "ssh.log");
+  const ssh = join(home, "fake-ssh");
+  await writeFile(ssh, `#!/bin/sh\necho "$@" >> '${log}'\nexit 255\n`);
+  await chmod(ssh, 0o755);
+  git(checkout, "config", "core.sshCommand", `${ssh} -o User=git`);
+  git(checkout, "remote", "add", "origin", "ssh://example.invalid/team/repo.git");
+  await (await openWorktree(sys, { ...job, push: true })).release();
+  assert.match(await readFile(log, "utf8"), /-o User=git -o BatchMode=yes .*example\.invalid/);
 });

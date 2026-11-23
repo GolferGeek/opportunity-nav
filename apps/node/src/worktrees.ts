@@ -3,7 +3,7 @@ import { lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/pr
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { JobSpec } from "@opnav/shared";
-import { shortText } from "./activity.ts";
+import { normalizeRemote } from "./capabilities.ts";
 import { childEnv } from "./system.ts";
 import type { System } from "./system.ts";
 
@@ -18,14 +18,22 @@ interface WorktreeRecord {
   createdAt: number;
   /** For a pushing job: the commit it started from, as fetched from origin. Without it, nothing is pushed. */
   start?: string;
+  /** For a pushing job: origin's address when it started. The work is pushed only there. */
+  remote?: string;
 }
 
 export class WorktreeError extends Error {}
 
 export function worktreeEnv(sys: System) {
   const env = childEnv(sys.env);
-  // A fetch or push must fail rather than wait for a password nobody can type.
+  // A fetch or push must fail rather than wait for a password nobody can type:
+  // no terminal prompt, no askpass program (an empty GIT_ASKPASS also skips core.askPass
+  // and SSH_ASKPASS), and no credential-manager window.
   env.GIT_TERMINAL_PROMPT = "0";
+  env.GIT_ASKPASS = "";
+  env.SSH_ASKPASS_REQUIRE = "never";
+  env.GCM_INTERACTIVE = "never";
+  delete env.SSH_ASKPASS;
   // Git can inherit these when the node is started from another Git process.
   for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
@@ -36,10 +44,29 @@ export function worktreeEnv(sys: System) {
 }
 
 async function git(sys: System, cwd: string, ...args: string[]) {
-  const { stdout } = await exec("git", ["-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], {
-    env: worktreeEnv(sys), timeout: 60_000,
+  return gitWith(sys, cwd, {}, ...args);
+}
+
+async function gitWith(sys: System, cwd: string, opts: { signal?: AbortSignal; env?: NodeJS.ProcessEnv }, ...args: string[]) {
+  const run = exec("git", ["-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], {
+    env: opts.env ?? worktreeEnv(sys), timeout: 60_000, signal: opts.signal,
   });
-  return stdout;
+  run.child.stdin?.end();
+  return (await run).stdout;
+}
+
+/**
+ * Fetch or push without ever asking for a sign-in: SSH runs in batch mode (keeping any
+ * ssh command the user set up) and credential helpers are told not to open a prompt.
+ */
+async function network(sys: System, cwd: string, signal: AbortSignal | undefined, ...args: string[]) {
+  const env = worktreeEnv(sys);
+  if (!env.GIT_SSH) {
+    const ssh = env.GIT_SSH_COMMAND?.trim() ||
+      (await git(sys, cwd, "config", "--get", "core.sshCommand").catch(() => "")).trim() || "ssh";
+    env.GIT_SSH_COMMAND = `${ssh} -o BatchMode=yes`;
+  }
+  return gitWith(sys, cwd, { signal, env }, "-c", "credential.interactive=false", ...args);
 }
 
 function directory(sys: System) {
@@ -68,7 +95,8 @@ async function recordAt(path: string): Promise<WorktreeRecord> {
     throw new Error("Invalid worktree record");
   }
   const start = typeof record.start === "string" && /^[a-f0-9]{40,64}$/.test(record.start) ? record.start : undefined;
-  return { jobId: record.jobId, checkout: record.checkout, baseRef: record.baseRef, createdAt: record.createdAt, start };
+  const remote = typeof record.remote === "string" && record.remote ? record.remote : undefined;
+  return { jobId: record.jobId, checkout: record.checkout, baseRef: record.baseRef, createdAt: record.createdAt, start, remote };
 }
 
 async function registered(sys: System, checkout: string, path: string, branch: string) {
@@ -125,6 +153,7 @@ export async function openWorktree(sys: System, job: JobSpec) {
       const start = base && await fetchBranch(sys, checkout, base)
         .then(() => git(sys, checkout, "rev-parse", "--verify", `refs/remotes/origin/${base}^{commit}`))
         .then(sha => sha.trim(), () => undefined);
+      const remote = start && await originUrls(sys, checkout).then(urls => urls.length === 1 ? urls[0] : undefined, () => undefined);
       const branchExists = await git(sys, checkout, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)
         .then(() => true, error => {
           if (error.code === 1) return false;
@@ -132,8 +161,8 @@ export async function openWorktree(sys: System, job: JobSpec) {
         });
       await git(sys, checkout, "worktree", "add", "--lock",
         ...(branchExists ? [path, branch] : ["-b", branch, path, start || "HEAD"]));
-      if (!branchExists && start) {
-        saved = { ...saved, start };
+      if (!branchExists && start && remote) {
+        saved = { ...saved, start, remote };
         await writeFile(metadata, JSON.stringify(saved), { mode: 0o600 });
       }
     } else {
@@ -142,7 +171,7 @@ export async function openWorktree(sys: System, job: JobSpec) {
     }
     const landing = saved;
     return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message, branch),
-      push: () => pushWork(sys, path, landing, branch), async release() {
+      push: (signal?: AbortSignal) => pushWork(sys, path, landing, branch, signal), async release() {
       await git(sys, checkout, "worktree", "unlock", path).catch(() => {});
     } };
   } catch {
@@ -159,7 +188,11 @@ export async function openWorktree(sys: System, job: JobSpec) {
  */
 export async function commitLeftovers(sys: System, path: string, message: string, branch?: string): Promise<string | undefined> {
   // Leftovers belong on the job's branch; if the agent switched away, don't commit them anywhere else.
-  if (branch && !await onBranch(sys, path, branch)) throw new Error(`The worktree is not on ${branch}`);
+  if (branch && !await onBranch(sys, path, branch)) {
+    if (!(await git(sys, path, "status", "--porcelain", "--untracked-files=all", "--", ".",
+      ":(exclude,glob)**/node_modules", ":(exclude,glob)**/node_modules/**")).trim()) return undefined;
+    throw new Error(`The worktree is not on ${branch}`);
+  }
   // A node_modules symlink into the main checkout isn't matched by a "node_modules/" ignore rule.
   await git(sys, path, "add", "--all", "--", ".", ":(exclude,glob)**/node_modules", ":(exclude,glob)**/node_modules/**");
   if (!(await git(sys, path, "diff", "--cached", "--name-only")).trim()) return undefined;
@@ -176,15 +209,40 @@ async function onBranch(sys: System, path: string, branch: string) {
   return (await git(sys, path, "symbolic-ref", "--quiet", "HEAD").catch(() => "")).trim() === `refs/heads/${branch}`;
 }
 
-function fetchBranch(sys: System, cwd: string, base: string) {
-  return git(sys, cwd, "fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`);
+function fetchBranch(sys: System, cwd: string, base: string, signal?: AbortSignal) {
+  return network(sys, cwd, signal, "fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`);
 }
 
-/** Git's own last line of complaint, without anything that looks like a secret. */
-function gitReason(error: unknown): string {
-  const stderr = String((error as { stderr?: unknown }).stderr ?? "");
-  const line = stderr.split(/\r?\n/).map(l => l.trim()).filter(Boolean).findLast(l => /error|fatal|rejected|denied|could not/i.test(l));
-  return shortText(line ?? stderr.split(/\r?\n/).findLast(l => l.trim()) ?? (error as Error).message, 200) ?? "Git failed";
+/** origin's addresses, fetch or push, with insteadOf and pushInsteadOf applied. */
+async function originUrls(sys: System, cwd: string, push = false) {
+  return (await git(sys, cwd, "remote", "get-url", "--all", ...(push ? ["--push"] : []), "origin"))
+    .split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+}
+
+/** Two addresses for the same repo: identical, or the same host and path (SSH and HTTPS alike). */
+function sameRepo(a: string, b: string) {
+  const key = normalizeRemote(a);
+  return a === b || key !== undefined && key === normalizeRemote(b);
+}
+
+/**
+ * Why Git failed, as a fixed phrase. Git's own text never leaves this machine: it can
+ * hold a credential (in a URL, or from a credential helper) that no pattern would catch.
+ */
+export function gitReason(error: unknown): string {
+  const e = error as { stderr?: unknown; killed?: boolean; signal?: unknown; name?: unknown; code?: unknown };
+  if (e.name === "AbortError" || e.code === "ABORT_ERR") return "the job was cancelled";
+  if (e.killed || e.signal) return "Git took too long, perhaps waiting for a sign-in";
+  const stderr = String(e.stderr ?? "");
+  if (/terminal prompts disabled|could not read (username|password)|authentication|permission denied|publickey|host key verification|\b40[13]\b|credential/i.test(stderr)) {
+    return "origin needs a sign-in this machine can't give without asking";
+  }
+  if (/could not resolve host|connection (refused|timed out|reset|closed)|network is unreachable|timed out|unable to access|could not connect/i.test(stderr)) {
+    return "origin couldn't be reached";
+  }
+  if (/repository not found|does not appear to be a git repository|not found/i.test(stderr)) return "origin couldn't find the repo";
+  if (/rejected|non-fast-forward|fetch first|protected|declined|denied/i.test(stderr)) return "origin refused it";
+  return "Git failed";
 }
 
 /**
@@ -195,9 +253,11 @@ function gitReason(error: unknown): string {
  * the job's commits onto origin when it has. If that conflicts or the push is refused,
  * push the job's own branch instead. Returns one plain line saying what happened.
  */
-export async function pushWork(sys: System, path: string, record: Pick<WorktreeRecord, "baseRef" | "start">,
-  branch: string): Promise<string> {
+export async function pushWork(sys: System, path: string, record: Pick<WorktreeRecord, "baseRef" | "start" | "remote">,
+  branch: string, signal?: AbortSignal): Promise<string> {
   const kept = `The work is on branch ${branch} on this machine.`;
+  const cancelled = `Not pushed: the job was cancelled. ${kept}`;
+  if (signal?.aborted) return cancelled;
   const base = landingBranch(record.baseRef);
   if (!base) return `Not pushed: the checkout wasn't on a branch, so there was no branch to land the work on. ${kept}`;
   const start = record.start;
@@ -223,18 +283,32 @@ export async function pushWork(sys: System, path: string, record: Pick<WorktreeR
   } catch {
     return `Not pushed: could not check the commits on branch ${branch}. ${kept}`;
   }
+  // Push only to the repo the job started from: not to a push URL, rewrite or new origin pointing elsewhere.
+  try {
+    const [fetchUrls, pushUrls] = await Promise.all([originUrls(sys, path), originUrls(sys, path, true)]);
+    const own = (url: string) => record.remote !== undefined && sameRepo(url, record.remote);
+    if (fetchUrls.length !== 1 || !own(fetchUrls[0]!) || !pushUrls.length || !pushUrls.every(own)) {
+      return `Not pushed: origin's address isn't only the repo the job started from. ${kept}`;
+    }
+  } catch {
+    return `Not pushed: could not read origin's address. ${kept}`;
+  }
 
+  const push = (commit: string, target: string) =>
+    network(sys, path, signal, "push", "--quiet", "origin", `${commit}:refs/heads/${target}`);
   const toBranch = async (why: string, commit: string) => {
+    if (signal?.aborted) return `${why} ${cancelled}`;
     try {
-      await git(sys, path, "push", "--quiet", "origin", `${commit}:refs/heads/${branch}`);
+      await push(commit, branch);
       return `${why} Pushed the work to branch ${branch} instead.`;
     } catch (error) {
       return `${why} Could not push branch ${branch} either (${gitReason(error)}). ${kept}`;
     }
   };
   try {
-    await fetchBranch(sys, path, base);
+    await fetchBranch(sys, path, base, signal);
   } catch (error) {
+    if (signal?.aborted) return cancelled;
     return toBranch(`Could not fetch ${base} from origin (${gitReason(error)}).`, tip);
   }
   let remote: string;
@@ -246,6 +320,10 @@ export async function pushWork(sys: System, path: string, record: Pick<WorktreeR
   if (await ancestor(tip, remote)) return `Nothing new to push: ${base} on origin already has this work.`;
   let landing = tip;
   if (!await ancestor(remote, tip)) {
+    // A rebase replays commits one by one and drops merges, with whatever was fixed in them.
+    const merges = await git(sys, path, "rev-list", "--count", "--merges", tip, `^${start}`).then(n => Number(n.trim()), () => NaN);
+    if (merges !== 0) return toBranch(`${base} moved on, and the work has merge commits a rebase would lose.`, tip);
+    if (signal?.aborted) return cancelled;
     // Replay only the job's commits, start..tip, onto origin's branch.
     try {
       await git(sys, path, "rebase", "--quiet", "--onto", remote, start, branch);
@@ -256,9 +334,11 @@ export async function pushWork(sys: System, path: string, record: Pick<WorktreeR
     }
     if (!await ancestor(remote, landing)) return toBranch(`${base} moved on, and the work didn't land on top of it.`, tip);
   }
+  if (signal?.aborted) return cancelled;
   try {
-    await git(sys, path, "push", "--quiet", "origin", `${landing}:refs/heads/${base}`);
+    await push(landing, base);
   } catch (error) {
+    if (signal?.aborted) return cancelled;
     return toBranch(`Could not push to ${base} (${gitReason(error)}).`, landing);
   }
   return `Pushed to ${base} as ${(await git(sys, path, "rev-parse", "--short", landing)).trim()}.`;

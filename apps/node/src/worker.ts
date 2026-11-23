@@ -72,6 +72,19 @@ export function terminal(text: string): Terminal {
 }
 
 /**
+ * Why a finished turn's work must not be pushed, or undefined when it may be.
+ * Only a whole answer lands: a commit that failed, a cancel that came late, an empty
+ * reply or a question block that didn't parse all mean the work may be half done.
+ */
+export function pushHold(summary: string, committed: boolean, signal: AbortSignal): string | undefined {
+  if (signal.aborted) return "the job was cancelled.";
+  if (!committed) return "the changes left in the worktree couldn't be committed.";
+  if (!summary.trim()) return "the agent finished without a final answer.";
+  if (/```[ \t]*opnav-needs-input/i.test(summary)) return "the agent's answer has a question block that couldn't be read.";
+  return undefined;
+}
+
+/**
  * Read agy's final result. agy says SUCCESS even when it stopped because a
  * tool was refused and it never answered; that's a failure, not a result.
  */
@@ -152,16 +165,24 @@ export async function runWorker(sys: System, binary: string, turn: Turn, signal:
   }
   try {
     const outcome = await runInWorktree(sys, binary, turn, signal, emit, autonomy, worktree.path, worktree.branch);
+    let committed = false;
     if (outcome.type !== "error" || outcome.code !== "cancelled") {
       const agent = agentNames[turn.job.provider] ?? "The agent";
       const title = turn.job.title.split("\n")[0]!.trim().slice(0, 72) || "Job work";
-      await worktree.commit(`${title}\n\n${agent} left these changes uncommitted (job ${turn.job.id.slice(0, 8)}); Opportunity Nav committed them.`)
-        .then(sha => { if (sha) emit({ type: "progress", text: `Committed the changes ${agent} left, as ${sha}.` }); },
-          () => emit({ type: "progress", text: `Could not commit the changes ${agent} left. They are still in the worktree.` }));
+      committed = await worktree.commit(`${title}\n\n${agent} left these changes uncommitted (job ${turn.job.id.slice(0, 8)}); Opportunity Nav committed them.`)
+        .then(sha => {
+          if (sha) emit({ type: "progress", text: `Committed the changes ${agent} left, as ${sha}.` });
+          return true;
+        }, () => {
+          emit({ type: "progress", text: `Could not commit the changes ${agent} left. They are still in the worktree.` });
+          return false;
+        });
     }
     // A pushing job lands its work only when it's done, not when it stops to ask.
     if (turn.job.push && outcome.type === "result") {
-      emit({ type: "progress", text: await worktree.push() });
+      const held = pushHold(outcome.summary, committed, signal);
+      emit({ type: "progress", text: held ? `Not pushed: ${held} The work is on branch ${worktree.branch} on this machine.`
+        : await worktree.push(signal) });
     }
     return outcome;
   } finally {
