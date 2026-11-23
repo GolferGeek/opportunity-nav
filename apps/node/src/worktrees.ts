@@ -16,6 +16,8 @@ interface WorktreeRecord {
   checkout: string;
   baseRef: string;
   createdAt: number;
+  /** For a pushing job: the commit it started from, as fetched from origin. Without it, nothing is pushed. */
+  start?: string;
 }
 
 export class WorktreeError extends Error {}
@@ -65,7 +67,8 @@ async function recordAt(path: string): Promise<WorktreeRecord> {
     typeof record.baseRef !== "string" || typeof record.createdAt !== "number" || !Number.isFinite(record.createdAt)) {
     throw new Error("Invalid worktree record");
   }
-  return { jobId: record.jobId, checkout: record.checkout, baseRef: record.baseRef, createdAt: record.createdAt };
+  const start = typeof record.start === "string" && /^[a-f0-9]{40,64}$/.test(record.start) ? record.start : undefined;
+  return { jobId: record.jobId, checkout: record.checkout, baseRef: record.baseRef, createdAt: record.createdAt, start };
 }
 
 async function registered(sys: System, checkout: string, path: string, branch: string) {
@@ -107,7 +110,7 @@ export async function openWorktree(sys: System, job: JobSpec) {
     await writeFile(metadata, JSON.stringify(record), { flag: "wx", mode: 0o600 }).catch(error => {
       if (error.code !== "EEXIST") throw error;
     });
-    const saved = await recordAt(metadata);
+    let saved = await recordAt(metadata);
     if (saved.jobId !== job.id || saved.checkout !== checkout) throw new Error();
 
     const exists = await lstat(path).then(() => true, error => {
@@ -116,8 +119,12 @@ export async function openWorktree(sys: System, job: JobSpec) {
     });
     if (!exists) {
       // A job that pushes lands on its checkout's branch on origin, so it starts from there.
+      // If origin can't be fetched it starts from this machine's HEAD, and then it never pushes:
+      // that history may hold commits that were never meant to leave this machine.
       const base = job.push ? landingBranch(saved.baseRef) : undefined;
-      const start = base && await fetchBranch(sys, checkout, base).then(() => `refs/remotes/origin/${base}`, () => "HEAD");
+      const start = base && await fetchBranch(sys, checkout, base)
+        .then(() => git(sys, checkout, "rev-parse", "--verify", `refs/remotes/origin/${base}^{commit}`))
+        .then(sha => sha.trim(), () => undefined);
       const branchExists = await git(sys, checkout, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)
         .then(() => true, error => {
           if (error.code === 1) return false;
@@ -125,12 +132,17 @@ export async function openWorktree(sys: System, job: JobSpec) {
         });
       await git(sys, checkout, "worktree", "add", "--lock",
         ...(branchExists ? [path, branch] : ["-b", branch, path, start || "HEAD"]));
+      if (!branchExists && start) {
+        saved = { ...saved, start };
+        await writeFile(metadata, JSON.stringify(saved), { mode: 0o600 });
+      }
     } else {
       if (!await registered(sys, checkout, path, branch)) throw new Error();
       await git(sys, checkout, "worktree", "lock", path);
     }
-    return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message),
-      push: () => pushWork(sys, path, saved.baseRef, branch), async release() {
+    const landing = saved;
+    return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message, branch),
+      push: () => pushWork(sys, path, landing, branch), async release() {
       await git(sys, checkout, "worktree", "unlock", path).catch(() => {});
     } };
   } catch {
@@ -145,7 +157,9 @@ export async function openWorktree(sys: System, job: JobSpec) {
  * so their own `git commit` fails. The helper commits for them, outside the sandbox and with
  * hooks off, so nothing the agent wrote runs unsandboxed.
  */
-export async function commitLeftovers(sys: System, path: string, message: string): Promise<string | undefined> {
+export async function commitLeftovers(sys: System, path: string, message: string, branch?: string): Promise<string | undefined> {
+  // Leftovers belong on the job's branch; if the agent switched away, don't commit them anywhere else.
+  if (branch && !await onBranch(sys, path, branch)) throw new Error(`The worktree is not on ${branch}`);
   // A node_modules symlink into the main checkout isn't matched by a "node_modules/" ignore rule.
   await git(sys, path, "add", "--all", "--", ".", ":(exclude,glob)**/node_modules", ":(exclude,glob)**/node_modules/**");
   if (!(await git(sys, path, "diff", "--cached", "--name-only")).trim()) return undefined;
@@ -156,6 +170,10 @@ export async function commitLeftovers(sys: System, path: string, message: string
 /** The branch a pushing job lands on: the checkout's branch, unless it was detached or a job's own. */
 function landingBranch(baseRef: string): string | undefined {
   return baseRef.startsWith("refs/heads/") && !baseRef.startsWith("refs/heads/opnav/") ? baseRef.slice("refs/heads/".length) : undefined;
+}
+
+async function onBranch(sys: System, path: string, branch: string) {
+  return (await git(sys, path, "symbolic-ref", "--quiet", "HEAD").catch(() => "")).trim() === `refs/heads/${branch}`;
 }
 
 function fetchBranch(sys: System, cwd: string, base: string) {
@@ -171,43 +189,79 @@ function gitReason(error: unknown): string {
 
 /**
  * Land a job's committed work on the branch its checkout was on, and push it.
- * Fast-forward when origin hasn't moved; rebase onto origin when it has. If the
- * rebase conflicts or the push is refused, push the job's own branch instead.
- * Returns one plain line saying what happened.
+ * Only the job's own commits leave this machine: the ones on its branch since the
+ * commit it started from on origin. It pushes that branch's tip by commit ID, never
+ * whatever happens to be checked out. Fast-forward when origin hasn't moved; replay
+ * the job's commits onto origin when it has. If that conflicts or the push is refused,
+ * push the job's own branch instead. Returns one plain line saying what happened.
  */
-export async function pushWork(sys: System, path: string, baseRef: string, branch: string): Promise<string> {
-  const toBranch = async (why: string) => {
+export async function pushWork(sys: System, path: string, record: Pick<WorktreeRecord, "baseRef" | "start">,
+  branch: string): Promise<string> {
+  const kept = `The work is on branch ${branch} on this machine.`;
+  const base = landingBranch(record.baseRef);
+  if (!base) return `Not pushed: the checkout wasn't on a branch, so there was no branch to land the work on. ${kept}`;
+  const start = record.start;
+  if (!start) return `Not pushed: the job couldn't start from ${base} on origin, and its branch may hold commits from this machine that aren't on origin. ${kept}`;
+  if (!await onBranch(sys, path, branch)) return `Not pushed: the worktree was no longer on branch ${branch}. ${kept}`;
+  const resolve = async (ref: string) => (await git(sys, path, "rev-parse", "--verify", `${ref}^{commit}`)).trim();
+  const ancestor = (a: string, b: string) => git(sys, path, "merge-base", "--is-ancestor", a, b).then(() => true, () => false);
+  let tip: string;
+  try {
+    tip = await resolve(`refs/heads/${branch}`);
+  } catch {
+    return `Not pushed: could not read branch ${branch}. ${kept}`;
+  }
+  // The branch must still grow from where the job started, or its history isn't the job's.
+  if (!await ancestor(start, tip)) return `Not pushed: branch ${branch} no longer builds on ${base} from origin. ${kept}`;
+  if (tip === start) return `Nothing new to push: the job made no commits.`;
+  // The job's commits are its own: none of them is on another branch of this checkout.
+  const count = async (...args: string[]) => Number((await git(sys, path, "rev-list", "--count", tip, `^${start}`, ...args)).trim());
+  try {
+    if (await count() !== await count("--not", `--exclude=${branch}`, "--branches")) {
+      return `Not pushed: branch ${branch} holds commits from another branch on this machine. ${kept}`;
+    }
+  } catch {
+    return `Not pushed: could not check the commits on branch ${branch}. ${kept}`;
+  }
+
+  const toBranch = async (why: string, commit: string) => {
     try {
-      await git(sys, path, "push", "--quiet", "origin", `HEAD:refs/heads/${branch}`);
+      await git(sys, path, "push", "--quiet", "origin", `${commit}:refs/heads/${branch}`);
       return `${why} Pushed the work to branch ${branch} instead.`;
     } catch (error) {
-      return `${why} Could not push branch ${branch} either (${gitReason(error)}). The work is on that branch on this machine.`;
+      return `${why} Could not push branch ${branch} either (${gitReason(error)}). ${kept}`;
     }
   };
-  const base = landingBranch(baseRef);
-  if (!base) return toBranch("The checkout wasn't on a branch, so there was no branch to land the work on.");
   try {
     await fetchBranch(sys, path, base);
   } catch (error) {
-    return toBranch(`Could not fetch ${base} from origin (${gitReason(error)}).`);
+    return toBranch(`Could not fetch ${base} from origin (${gitReason(error)}).`, tip);
   }
-  const remote = `refs/remotes/origin/${base}`;
-  const ancestor = (a: string, b: string) => git(sys, path, "merge-base", "--is-ancestor", a, b).then(() => true, () => false);
-  if (await ancestor("HEAD", remote)) return `Nothing new to push: ${base} on origin already has this work.`;
-  if (!await ancestor(remote, "HEAD")) {
+  let remote: string;
+  try {
+    remote = await resolve(`refs/remotes/origin/${base}`);
+  } catch (error) {
+    return toBranch(`Could not read ${base} from origin (${gitReason(error)}).`, tip);
+  }
+  if (await ancestor(tip, remote)) return `Nothing new to push: ${base} on origin already has this work.`;
+  let landing = tip;
+  if (!await ancestor(remote, tip)) {
+    // Replay only the job's commits, start..tip, onto origin's branch.
     try {
-      await git(sys, path, "rebase", "--quiet", remote);
+      await git(sys, path, "rebase", "--quiet", "--onto", remote, start, branch);
+      landing = await resolve(`refs/heads/${branch}`);
     } catch {
       await git(sys, path, "rebase", "--abort").catch(() => {});
-      return toBranch(`${base} moved on, and the work doesn't rebase cleanly onto it.`);
+      return toBranch(`${base} moved on, and the work doesn't rebase cleanly onto it.`, tip);
     }
+    if (!await ancestor(remote, landing)) return toBranch(`${base} moved on, and the work didn't land on top of it.`, tip);
   }
   try {
-    await git(sys, path, "push", "--quiet", "origin", `HEAD:refs/heads/${base}`);
+    await git(sys, path, "push", "--quiet", "origin", `${landing}:refs/heads/${base}`);
   } catch (error) {
-    return toBranch(`Could not push to ${base} (${gitReason(error)}).`);
+    return toBranch(`Could not push to ${base} (${gitReason(error)}).`, landing);
   }
-  return `Pushed to ${base} as ${(await git(sys, path, "rev-parse", "--short", "HEAD")).trim()}.`;
+  return `Pushed to ${base} as ${(await git(sys, path, "rev-parse", "--short", landing)).trim()}.`;
 }
 
 export async function pruneWorktrees(sys: System, now = Date.now()) {

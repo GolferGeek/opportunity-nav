@@ -238,7 +238,7 @@ test("a worker that can't start says so", async t => {
 });
 
 /** A checkout cloned from a bare origin, and a second clone to move origin on with. */
-async function pushFixture(t: TestContext) {
+async function pushFixture(t: TestContext, agent: (home: string) => string[] = () => []) {
   const { sys, home, data, checkout: seed, job } = await fixture(t);
   const origin = join(home, "origin.git");
   git(home, "clone", "--quiet", "--bare", seed, origin);
@@ -255,6 +255,7 @@ async function pushFixture(t: TestContext) {
     "#!/bin/sh",
     "cat > /dev/null",
     "echo fixed > fix.txt",
+    ...agent(home),
     "echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Done.\"}}'",
     "echo '{\"type\":\"turn.completed\",\"usage\":{}}'",
   ].join("\n") + "\n");
@@ -320,4 +321,57 @@ test("a job without push never pushes", async t => {
   assert.ok(!progress.some(p => /push/i.test(p)));
   assert.equal(git(origin, "rev-parse", "main"), before);
   assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+});
+
+test("a job that pushes publishes only its own branch, not whatever the agent left checked out", async t => {
+  // The checkout has a commit that was never pushed. The agent commits its fix, then switches to that branch.
+  const { origin, checkout, spec, run } = await pushFixture(t, () =>
+    ["git add fix.txt && git commit --quiet -m 'Agent fix'", "git checkout --quiet private"]);
+  git(checkout, "checkout", "--quiet", "-b", "private");
+  await writeFile(join(checkout, "secret.txt"), "local only\n");
+  git(checkout, "add", "secret.txt");
+  git(checkout, "commit", "--quiet", "-m", "Local only");
+  git(checkout, "checkout", "--quiet", "main");
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { progress } = await run();
+  assert.equal(progress.at(-1), `Not pushed: the worktree was no longer on branch ${branch}. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "branch", "--list", "opnav/*", "private"), "");
+  assert.equal(git(checkout, "log", "-1", "--format=%s", branch), "Agent fix");
+});
+
+test("a job that pushes never publishes commits from another local branch, even on its own branch", async t => {
+  // The agent stays on its branch but resets it onto the checkout's unpushed main.
+  const { origin, checkout, spec, run } = await pushFixture(t, () =>
+    ["git reset --quiet --hard main", "echo fixed > fix.txt"]);
+  await writeFile(join(checkout, "secret.txt"), "local only\n");
+  git(checkout, "add", "secret.txt");
+  git(checkout, "commit", "--quiet", "-m", "Local only");
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { progress } = await run();
+  assert.equal(progress.at(-1), `Not pushed: branch ${branch} holds commits from another branch on this machine. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+});
+
+test("a job that pushes publishes nothing when it couldn't start from origin", async t => {
+  // origin can't be reached when the job starts, so it starts from the checkout's unpushed HEAD.
+  // By the end origin answers again; the local history must still stay here.
+  const { origin, checkout, spec, run } = await pushFixture(t, home =>
+    [`git remote set-url origin '${join(home, "origin.git")}'`]);
+  await writeFile(join(checkout, "secret.txt"), "local only\n");
+  git(checkout, "add", "secret.txt");
+  git(checkout, "commit", "--quiet", "-m", "Local only");
+  git(checkout, "remote", "set-url", "origin", join(checkout, "..", "missing.git"));
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { outcome, progress } = await run();
+  assert.deepEqual(outcome, { type: "result", summary: "Done." });
+  assert.equal(git(checkout, "remote", "get-url", "origin"), origin);
+  assert.equal(progress.at(-1), `Not pushed: the job couldn't start from main on origin, and its branch may hold commits from this machine that aren't on origin. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+  assert.equal(git(checkout, "show", `${branch}:fix.txt`), "fixed");
 });
