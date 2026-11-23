@@ -1,7 +1,8 @@
 #!/usr/bin/env node
+import { homedir } from "node:os";
 import { delimiter } from "node:path";
 import { manageService, ServiceError, serviceEnv } from "./service.ts";
-import { system } from "./system.ts";
+import { searchPath, system } from "./system.ts";
 import { pruneWorktrees } from "./worktrees.ts";
 import { readUsage, startNode } from "./index.ts";
 
@@ -27,7 +28,10 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const env = service ? { ...process.env, ...await serviceEnv() } : process.env;
+  const base: NodeJS.ProcessEnv = service ? { ...process.env, ...await serviceEnv() } : process.env;
+  // Passing env to system() skips its PATH widening, so widen it here: launchd's
+  // PATH misses /usr/local/bin, where Docker Desktop puts `docker`.
+  const env: NodeJS.ProcessEnv = { ...base, PATH: searchPath(base.PATH, homedir(), process.platform) };
   const { OPNAV_SERVER_URL: serverUrl, OPNAV_NODE_TOKEN: token, OPNAV_CHECKOUT_ROOTS, OPNAV_HANDOFF_DIR } = env;
   if (!serverUrl || !token) {
     process.stderr.write("Set OPNAV_SERVER_URL and OPNAV_NODE_TOKEN.\n");
