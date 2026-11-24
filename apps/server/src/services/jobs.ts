@@ -10,11 +10,12 @@ import {
   MachineTool,
   ProviderId,
   Runner,
+  runsInCloud,
 } from "@opnav/shared";
 import type { Db, Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { getNode, listTree, projectOf } from "./tree.ts";
-import { checkoutFor, hasLocalModels, heldBack, loadBusy, loadRanking, markBusy, orderQueue, placeInApp, queuedRows, slotsOf, turnBlocked, type Offer } from "./backlog.ts";
+import { checkoutFor, hasLocalModels, heldBack, loadBusy, loadRanking, markBusy, orderQueue, placeInApp, queuedRows, slotsView, turnBlocked, type Offer } from "./backlog.ts";
 
 export const MAX_ATTEMPTS = 3;
 
@@ -177,21 +178,29 @@ export function jobRow(r: any) {
  * branch, if it names one), what it needs, and nothing holding it back (held,
  * waiting on another item, the machine's local models busy, its branch being
  * pushed to by another job). Never more than the machine has free: its slots
- * minus the turns it holds live leases on. Claims for one person take turns
+ * minus the turns it holds live leases on, and what the helper asked for. Cloud
+ * jobs have their own slots when the helper has them (cloud_capacity, asked for
+ * with cloudMax): they don't take local slots, and a full cloud doesn't stop a
+ * local job behind it. Claims for one person take turns
  * (an advisory lock), so two machines can't both start jobs the rules say
  * mustn't run together, and two claims can't fill the same slots.
  */
 export async function claim(sql: Sql, userId: string, machineId: string, req: ClaimRequest): Promise<Turn[]> {
   return sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(hashtext(${`opnav-claim:${userId}`}))`;
-    const [machine] = await tx<{ checkouts: { path: string; remote?: string; branch?: string }[]; tools: string[]; capacity: number; job_limit: number | null; taking_jobs: boolean; providers: any[] }[]>`
-      select checkouts, tools, capacity, job_limit, taking_jobs, providers from nodes where id = ${machineId} and user_id = ${userId} for update`;
+    const [machine] = await tx<{ checkouts: { path: string; remote?: string; branch?: string }[]; tools: string[]; capacity: number; job_limit: number | null; cloud_capacity: number | null; taking_jobs: boolean; providers: any[] }[]>`
+      select checkouts, tools, capacity, job_limit, cloud_capacity, taking_jobs, providers from nodes where id = ${machineId} and user_id = ${userId} for update`;
     if (!machine) throw new HttpError(401, "Unknown machine; send a heartbeat first.");
     if (!machine.taking_jobs) return [];
-    const [held] = await tx<{ running: number }[]>`select count(*)::int as running from turns
-      where node_id = ${machineId} and status = 'running' and lease_expires_at > now()`;
-    const free = Math.min(req.max, slotsOf(machine) - Number(held?.running ?? 0));
-    if (free <= 0) return [];
+    const [held] = await tx<{ running: number; running_cloud: number }[]>`select count(*)::int as running,
+        (count(*) filter (where j.runner <> 'direct'))::int as running_cloud
+      from turns t join jobs j on j.id = t.job_id
+      where t.node_id = ${machineId} and t.status = 'running' and t.lease_expires_at > now()`;
+    // Free slots in each pool: local, and cloud when the helper has cloud slots and asks for them (else cloud jobs share the local ones).
+    const view = slotsView({ ...machine, ...held, cloud_capacity: req.cloudMax == null ? null : machine.cloud_capacity });
+    const free = { local: Math.min(req.max, view.slots - view.running), cloud: view.cloudSlots == null ? 0 : Math.min(req.cloudMax!, view.cloudSlots - view.cloudRunning) };
+    const poolOf = (runner: string): keyof typeof free => view.cloudSlots != null && runsInCloud(runner) ? "cloud" : "local";
+    if (free.local <= 0 && free.cloud <= 0) return [];
     const offer: Offer = {
       id: machineId, providers: req.providers, cloudroomProviders: req.cloudroomProviders, claudeCloud: req.claudeCloud,
       tools: machine.tools ?? [], checkouts: machine.checkouts ?? [], localModels: hasLocalModels(machine.providers ?? []),
@@ -201,7 +210,9 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
 
     const turns: Turn[] = [];
     for (const r of rows) {
-      if (turns.length >= free) break;
+      if (free.local <= 0 && free.cloud <= 0) break;
+      const pool = poolOf(r.runner);
+      if (free[pool] <= 0) continue;
       if (heldBack(r, busy)) continue;
       const c = checkoutFor(r, offer);
       if ("why" in c) continue;
@@ -214,6 +225,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
           lease_expires_at = now() + make_interval(secs => ${LEASE_SECONDS}), started_at = now()
         where id = ${r.turn_id!} and status = 'queued' returning lease_id, lease_expires_at`;
       if (!t) continue;
+      free[pool]--;
       markBusy(r, machineId, c.branch, busy);
       await tx`update jobs set status = 'running', node_id = ${machineId}, checkout_path = ${c.path}, checkout_branch = ${c.branch},
         attempts = attempts + 1, updated_at = now() where id = ${r.id}`;

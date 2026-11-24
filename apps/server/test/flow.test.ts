@@ -601,6 +601,53 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     await sql`update jobs set status = 'cancelled' where project_id = ${project.id} and status in ('queued', 'running')`;
   });
 
+  test("cloud slots: cloud jobs have their own cap, don't take local slots, and never block a local job", async () => {
+    const box = (await createToken(sql, userId, "node", "cloud box")).token;
+    const remote = "https://github.com/example/cloudslots";
+    await ok(box, "POST", "/api/node/heartbeat", {
+      ...hb("cloudbox"), checkouts: [{ path: "/home/cloudbox/cloudslots", remote }], capacity: 2, cloudCapacity: 2, claudeCloud: { ready: true },
+    });
+    const project = await ok(ui, "POST", "/api/tree", { kind: "project", title: "Cloud slots", repoRemote: remote, defaultProvider: "claude" });
+    const start = (prompt: string, runner = "direct") => ok(ui, "POST", "/api/jobs", { nodeId: project.id, prompt, runner });
+    const local = [await start("Local 1"), await start("Local 2")];
+    const cloud = [await start("Cloud 1", "claude-cloud"), await start("Cloud 2", "claude-cloud"), await start("Cloud 3", "claude-cloud")];
+    const local3 = await start("Local 3");
+    const claimNow = (max: number, cloudMax: number) => ok(box, "POST", "/api/node/jobs/claim", { providers: ["claude"], claudeCloud: true, max, cloudMax });
+    const finish = (t: any) => ok(box, "POST", `/api/node/jobs/${t.job.id}/events`, { leaseId: t.leaseId, events: [{ seq: 0, at: now(), type: "result", summary: "Done" }] });
+
+    // The local slots fill with local jobs.
+    const first = (await claimNow(2, 0)).turns;
+    assert.deepEqual(first.map((t: any) => t.job.id), local.map((j) => j.id));
+    // Every local slot is full, and cloud jobs still start, up to the cloud cap.
+    const inCloud = (await claimNow(0, 2)).turns;
+    assert.deepEqual(inCloud.map((t: any) => t.job.id), [cloud[0].id, cloud[1].id]);
+    // The third cloud job waits, however much the helper asks for.
+    assert.equal((await claimNow(2, 5)).turns.length, 0, "local and cloud both full");
+    const [m] = (await ok(ui, "GET", "/api/machines")).filter((x: any) => x.name === "cloudbox");
+    assert.deepEqual([m.running, m.runningLocal, m.capacity, m.runningCloud, m.cloudCapacity], [4, 2, 2, 2, 2]);
+    const lined = await ok(ui, "GET", "/api/lined-up");
+    const pm = lined.perMachine.find((x: any) => x.name === "cloudbox");
+    assert.deepEqual([pm.running, pm.slots, pm.free, pm.cloudRunning, pm.cloudSlots, pm.cloudFree], [2, 2, 0, 2, 2, 0]);
+
+    // A local slot opens: the local job behind the waiting cloud job gets it.
+    await finish(first[0]);
+    const next = (await claimNow(1, 0)).turns;
+    assert.deepEqual(next.map((t: any) => t.job.id), [local3.id], "a full cloud never blocks a local job");
+    // A cloud slot opens: the third cloud job starts, while every local slot is still full.
+    await finish(inCloud[0]);
+    const third = (await claimNow(0, 1)).turns;
+    assert.deepEqual(third.map((t: any) => t.job.id), [cloud[2].id]);
+
+    // An owner's lower limit is on local slots; it leaves cloud slots alone.
+    await sql`update nodes set job_limit = 0 where id = ${m.id}`;
+    await sql`update turns set status = 'done', lease_id = null where node_id = ${m.id} and status = 'running'`;
+    const again = [await start("Local 4"), await start("Cloud 4", "claude-cloud")];
+    assert.deepEqual((await claimNow(2, 2)).turns.map((t: any) => t.job.id), [again[1].id]);
+    await sql`update turns set status = 'done', lease_id = null where node_id = ${m.id} and status = 'running'`;
+    await sql`update jobs set status = 'cancelled' where project_id = ${project.id} and status in ('queued', 'running')`;
+    await sql`update turns set status = 'cancelled' where status = 'queued' and job_id in (select id from jobs where project_id = ${project.id})`;
+  });
+
   test("backlog: machines pull the next item themselves, in the app ranking's order, keeping every rule", async () => {
     // A person of their own, so nothing from the other tests is in their backlog.
     const [u2] = await sql`insert into users (name) values ('Backlog') returning id`;

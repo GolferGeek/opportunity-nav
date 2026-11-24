@@ -99,7 +99,7 @@ export const actions = {
     },
   },
   list_machines: {
-    description: "The person's machines: which are online, which agents each can run jobs with, what else it has (docker, database), and whether it can hand jobs to Cloudroom's cloud or Claude's cloud.",
+    description: "The person's machines: which are online, which agents each can run jobs with, what else it has (docker, database), and whether it can hand jobs to Cloudroom's cloud or Claude's cloud. jobs: local slots (atOnce, running); cloud jobs have their own slots in inCloud (null = they share the local ones).",
     input: z.object({}),
     run: async (sql: Sql, userId: string) => {
       const seen = new Set<string>();
@@ -111,7 +111,8 @@ export const actions = {
           name: m.name, online: m.online, lastSeenAt: m.lastSeenAt, helperVersion: m.helperVersion,
           runsJobsWith: (m.providers as any[]).filter((p) => p.canRunJobs && p.signedIn).map((p) => p.provider),
           tools: m.tools, cloudroom: m.cloudroom?.providers ?? [],
-          jobs: { atOnce: m.capacity, running: m.running, takingJobs: m.takingJobs },
+          jobs: { atOnce: m.capacity, running: m.runningLocal, takingJobs: m.takingJobs,
+            inCloud: m.cloudCapacity == null ? null : { atOnce: m.cloudCapacity, running: m.runningCloud } },
           claudeCloud: m.claudeCloud?.ready ? "ready" : m.claudeCloud?.reason ?? "not set up",
         }));
     },
@@ -241,7 +242,7 @@ export const actions = {
       if (i.jobLimit !== undefined) await setJobLimit(sql, userId, id, i.jobLimit);
       if (i.takingJobs !== undefined) await setTakingJobs(sql, userId, { id }, i.takingJobs);
       const m = (await listMachines(sql, userId)).find((m) => m.id === id)!;
-      return { name: m.name, capacity: m.capacity, jobLimit: m.jobLimit, running: m.running, takingJobs: m.takingJobs };
+      return { name: m.name, capacity: m.capacity, jobLimit: m.jobLimit, running: m.runningLocal, cloudCapacity: m.cloudCapacity, runningCloud: m.runningCloud, takingJobs: m.takingJobs };
     },
   },
   get_job: {

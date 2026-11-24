@@ -19,7 +19,7 @@ export interface Lined {
   next: Next[];
   total: { waiting: number; ready: number; held: number; running: number };
   perApp: { app: string; running: number; ready: number; waiting: number; held: number }[];
-  perMachine: { name: string; takingJobs: boolean; slots: number; running: number; free: number; canTake: number }[];
+  perMachine: { name: string; takingJobs: boolean; slots: number; running: number; free: number; cloudSlots: number | null; cloudRunning: number; canTake: number }[];
   runningLow: { low: boolean; ready: number; slots: number; text: string };
 }
 
@@ -87,7 +87,7 @@ export function LinedUp({ onOpenJob, onError }: { onOpenJob: (id: string) => voi
           <div className="muted small">Machines</div>
           <ul className="plain small">
             {data.perMachine.map((m) => (
-              <li key={m.name}>{m.name}: {m.running} of {m.slots} running{m.takingJobs ? "" : " · not taking jobs"} · {m.canTake} ready it can take</li>
+              <li key={m.name}>{m.name}: {m.cloudSlots == null ? `${m.running} of ${m.slots} running` : `local ${m.running} of ${m.slots} · cloud ${m.cloudRunning} of ${m.cloudSlots}`}{m.takingJobs ? "" : " · not taking jobs"} · {m.canTake} ready it can take</li>
             ))}
           </ul>
           {data.running.length > 0 && <div className="muted small">Running: {data.running.map((r) => `${r.title} (${r.machine ?? "?"}, ${ago(r.startedAt)})`).join(" · ")}</div>}

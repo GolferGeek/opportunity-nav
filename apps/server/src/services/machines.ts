@@ -6,12 +6,12 @@ import { listTree, normaliseRemote } from "./tree.ts";
 export async function heartbeat(db: Db, userId: string, tokenId: string, hb: NodeHeartbeat): Promise<string> {
   const checkouts = hb.checkouts.map((c) => ({ ...c, remote: c.remote ? normaliseRemote(c.remote) : undefined }));
   const [r] = await db<{ id: string }[]>`
-    insert into nodes (user_id, token_id, hostname, name, platform, arch, helper_version, providers, checkouts, handoff, autonomy, cloudroom, claude_cloud, tools, capacity, last_seen_at)
+    insert into nodes (user_id, token_id, hostname, name, platform, arch, helper_version, providers, checkouts, handoff, autonomy, cloudroom, claude_cloud, tools, capacity, cloud_capacity, last_seen_at)
     values (${userId}, ${tokenId}, ${hb.hostname}, ${hb.name ?? hb.hostname}, ${hb.platform}, ${hb.arch}, ${hb.helperVersion},
-            ${db.json(hb.providers as any)}, ${db.json(checkouts as any)}, ${hb.handoff ? db.json(hb.handoff as any) : null}, ${hb.autonomy}, ${hb.cloudroom ? db.json(hb.cloudroom as any) : null}, ${hb.claudeCloud ? db.json(hb.claudeCloud as any) : null}, ${db.json([...new Set(hb.tools)])}, ${hb.capacity ?? 1}, now())
+            ${db.json(hb.providers as any)}, ${db.json(checkouts as any)}, ${hb.handoff ? db.json(hb.handoff as any) : null}, ${hb.autonomy}, ${hb.cloudroom ? db.json(hb.cloudroom as any) : null}, ${hb.claudeCloud ? db.json(hb.claudeCloud as any) : null}, ${db.json([...new Set(hb.tools)])}, ${hb.capacity ?? 1}, ${hb.cloudCapacity ?? null}, now())
     on conflict (token_id) do update set hostname = excluded.hostname, name = coalesce(nullif(${hb.name ?? ""}, ''), nodes.name),
       platform = excluded.platform, arch = excluded.arch, helper_version = excluded.helper_version,
-      providers = excluded.providers, checkouts = excluded.checkouts, handoff = excluded.handoff, autonomy = excluded.autonomy, cloudroom = excluded.cloudroom, claude_cloud = excluded.claude_cloud, tools = excluded.tools, capacity = excluded.capacity, last_seen_at = now()
+      providers = excluded.providers, checkouts = excluded.checkouts, handoff = excluded.handoff, autonomy = excluded.autonomy, cloudroom = excluded.cloudroom, claude_cloud = excluded.claude_cloud, tools = excluded.tools, capacity = excluded.capacity, cloud_capacity = excluded.cloud_capacity, last_seen_at = now()
     returning id`;
   return r!.id;
 }
@@ -24,8 +24,7 @@ export async function machineForToken(db: Db, tokenId: string): Promise<string |
 export async function listMachines(db: Db, userId: string) {
   // Running = turns it holds a live lease on. That's the server's own record, so
   // it doesn't wait for the helper's next heartbeat (activeJobIds).
-  const rows = await db`select n.*, t.revoked_at,
-      (select count(*)::int from turns r where r.node_id = n.id and r.status = 'running' and r.lease_expires_at > now()) as running
+  const rows = await db`select n.*, t.revoked_at, ${runningCounts(db)}
     from nodes n join api_tokens t on t.id = n.token_id where n.user_id = ${userId} order by n.name`;
   return rows.map((r) => ({
     id: r.id,
@@ -46,7 +45,16 @@ export async function listMachines(db: Db, userId: string) {
     /** What its helper runs at once, and the owner's limit (null = none). */
     helperCapacity: Number(r.capacity ?? 1),
     jobLimit: r.job_limit == null ? null : Number(r.job_limit),
+    /** Every job it's running, local and cloud. */
     running: Number(r.running ?? 0),
+    /**
+     * Cloud jobs (runsInCloud) have their own slots: cloudCapacity at once, on top
+     * of capacity. Null = an older helper, whose cloud jobs take local slots.
+     * runningLocal is what counts against capacity.
+     */
+    cloudCapacity: r.cloud_capacity == null ? null : Number(r.cloud_capacity),
+    runningCloud: Number(r.running_cloud ?? 0),
+    runningLocal: r.cloud_capacity == null ? Number(r.running ?? 0) : Number(r.running ?? 0) - Number(r.running_cloud ?? 0),
     /** Off: it finishes what it has and claims nothing new. */
     takingJobs: r.taking_jobs !== false,
     lastSeenAt: r.last_seen_at,
@@ -54,6 +62,12 @@ export async function listMachines(db: Db, userId: string) {
     revoked: !!r.revoked_at,
   }));
 }
+
+/** Columns running and running_cloud for a query over nodes n: turns it holds a live lease on, and the ones of those that run in a cloud. */
+export const runningCounts = (db: Db) => db`
+  (select count(*)::int from turns r where r.node_id = n.id and r.status = 'running' and r.lease_expires_at > now()) as running,
+  (select count(*)::int from turns r join jobs rj on rj.id = r.job_id
+    where r.node_id = n.id and r.status = 'running' and r.lease_expires_at > now() and rj.runner <> 'direct') as running_cloud`;
 
 /** Turn new jobs on or off for a machine, by id or name. Returns the machines it changed. */
 export async function setTakingJobs(db: Db, userId: string, machine: { id?: string; name?: string }, takingJobs: boolean) {

@@ -4,7 +4,7 @@
  *   opnav-admin token --role node --label "Mac Studio" [--user <id>]
  *   opnav-admin signin [--user <id>]        a new UI sign-in link
  *   opnav-admin merge-usage --from <id> --into <id>   fold a duplicate subscription card into another
- *   opnav-admin machines                    each machine: capacity, jobs running, taking new jobs, helper
+ *   opnav-admin machines                    each machine: local and cloud jobs running of its slots, taking new jobs, helper
  *   opnav-admin jobs-off --machine <name>   stop a machine taking new jobs; it finishes what it has
  *   opnav-admin jobs-on --machine <name>    let it take new jobs again
  * Tokens are printed once, to this terminal only.
@@ -61,7 +61,7 @@ try {
     case "machines":
       for (const m of await listMachines(sql, await userId())) {
         if (m.revoked) continue;
-        console.log(`${m.name}\t${m.online ? "online" : "offline"}\tcapacity ${m.capacity}\trunning ${m.running}\t${m.takingJobs ? "taking jobs" : "not taking new jobs"}\thelper ${m.helperVersion}`);
+        console.log(`${m.name}\t${m.online ? "online" : "offline"}\tlocal ${m.runningLocal} of ${m.capacity}\tcloud ${m.cloudCapacity == null ? "shares local" : `${m.runningCloud} of ${m.cloudCapacity}`}\t${m.takingJobs ? "taking jobs" : "not taking new jobs"}\thelper ${m.helperVersion}`);
       }
       break;
     case "jobs-on":

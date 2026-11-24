@@ -45,7 +45,7 @@ export function Settings({ onClose, onError }: { onClose: () => void; onError: (
               {m.tools?.length ? ` · has ${needsText(m.tools)}` : ""}
             </div>
             <div className="muted">
-              {m.running ? `Running ${m.running} of ${m.capacity} jobs` : `Runs up to ${m.capacity} ${m.capacity === 1 ? "job" : "jobs"} at once`}
+              {load(m)}
               {m.takingJobs === false ? " · not taking new jobs" : ""}
               {" "}<button className="link" onClick={() => toggle(m)}>{m.takingJobs === false ? "Take new jobs" : "Stop new jobs"}</button>
             </div>
@@ -91,4 +91,12 @@ function runsJobs(m: any): string {
   const jobs = signed.filter((p: any) => p.canRunJobs).map((p: any) => providerName(p.provider));
   const usage = signed.filter((p: any) => !p.canRunJobs).map((p: any) => providerName(p.provider));
   return [jobs.length ? `Runs jobs: ${jobs.join(", ")}` : "", usage.length ? `usage only: ${usage.join(", ")}` : ""].filter(Boolean).join(" · ");
+}
+
+/** A machine's load: "Local 2 of 3 · cloud 1 of 2" when it runs cloud jobs in their own slots, else its one count. */
+function load(m: any): string {
+  const local = m.runningLocal ?? m.running;
+  const cloud = m.cloudCapacity != null && (m.claudeCloud?.ready || m.cloudroom);
+  if (cloud) return `Local ${local} of ${m.capacity} · cloud ${m.runningCloud} of ${m.cloudCapacity}`;
+  return local ? `Running ${local} of ${m.capacity} jobs` : `Runs up to ${m.capacity} ${m.capacity === 1 ? "job" : "jobs"} at once`;
 }

@@ -221,7 +221,9 @@ function freeOrWhy(machines: MachineView[], provider: string, want: { remote: st
 }
 
 export async function pickReviewer(db: Db, userId: string, among: readonly string[], want: { remote: string; needs: string[]; machineId?: string }) {
-  const [accounts, machines] = await Promise.all([accountReadings(db, userId, among), listMachines(db, userId)]);
+  const [accounts, all0] = await Promise.all([accountReadings(db, userId, among), listMachines(db, userId)]);
+  // A review runs on the machine itself, so only its local slots count.
+  const machines = all0.map((m) => ({ ...m, running: m.runningLocal }));
   const all: Candidate[] = among.map((provider) => {
     const free = freeMachines(machines, provider, want);
     const best = bestMachine(accounts.get(provider) ?? { accounts: [], byMachine: new Map() }, free.ids, free.capable);

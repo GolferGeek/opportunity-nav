@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { Location, MachineTool, ProviderId, Runner } from "@opnav/shared";
+import { Location, MachineTool, ProviderId, Runner, runsInCloud } from "@opnav/shared";
 import type { Db, Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
+import { runningCounts } from "./machines.ts";
 import { listTree, normaliseRemote, pathOf } from "./tree.ts";
 import { checkJobShape, jobLocation, jobRow } from "./jobs.ts";
 
@@ -27,6 +28,9 @@ import { checkJobShape, jobLocation, jobRow } from "./jobs.ts";
  * Plus everything a claim already checked: the agent, the repo's checkout (on
  * the item's branch, if it names one), what it needs, a pinned machine, and the
  * machine's free slots (its helper's capacity, or its owner's lower limit).
+ * A cloud job (runsInCloud) uses the machine's cloud slots instead, when its
+ * helper has them (cloud_capacity): it only waits on a cloud, so it never takes
+ * a local slot and never stops a local job from starting.
  */
 
 export const Effort = z.enum(["low", "medium", "high", "xhigh", "max"]);
@@ -314,15 +318,30 @@ interface MachineView {
   name: string;
   online: boolean;
   takingJobs: boolean;
+  /** Local slots, and the jobs running in them. */
   slots: number;
   running: number;
+  /** Cloud slots, and the cloud jobs running in them. Null = an older helper: cloud jobs take local slots. */
+  cloudSlots: number | null;
+  cloudRunning: number;
   offer: Offer;
+}
+
+/** The slots a job with this runner uses on a machine, and how many of them are taken. */
+export function poolFor(m: Pick<MachineView, "slots" | "running" | "cloudSlots" | "cloudRunning">, runner: string) {
+  return m.cloudSlots != null && runsInCloud(runner) ? { slots: m.cloudSlots, running: m.cloudRunning } : { slots: m.slots, running: m.running };
+}
+
+/** Local and cloud slots from a nodes row with runningCounts. */
+export function slotsView(r: Record<string, any>) {
+  const split = r.cloud_capacity != null;
+  const total = Number(r.running ?? 0), cloud = Number(r.running_cloud ?? 0);
+  return { slots: slotsOf(r), running: split ? total - cloud : total, cloudSlots: split ? Number(r.cloud_capacity) : null, cloudRunning: cloud };
 }
 
 /** Online machines, one per name (a reinstalled machine keeps older records), with what they can run and their slots. */
 export async function onlineMachines(db: Db, userId: string): Promise<MachineView[]> {
-  const rows = await db`select n.*,
-      (select count(*)::int from turns r where r.node_id = n.id and r.status = 'running' and r.lease_expires_at > now()) as running
+  const rows = await db`select n.*, ${runningCounts(db)}
     from nodes n join api_tokens t on t.id = n.token_id
     where n.user_id = ${userId} and t.revoked_at is null order by n.last_seen_at desc`;
   const seen = new Set<string>();
@@ -335,8 +354,7 @@ export async function onlineMachines(db: Db, userId: string): Promise<MachineVie
       id: r.id, name: r.name,
       online: Date.now() - new Date(r.last_seen_at).getTime() < 120_000,
       takingJobs: r.taking_jobs !== false,
-      slots: slotsOf(r),
-      running: Number(r.running ?? 0),
+      ...slotsView(r),
       offer: {
         id: r.id,
         providers: providers.filter((p) => p.canRunJobs && p.signedIn).map((p) => p.provider),
@@ -351,7 +369,7 @@ export async function onlineMachines(db: Db, userId: string): Promise<MachineVie
   return out;
 }
 
-/** A machine's job slots: its helper's capacity, or its owner's lower limit. */
+/** A machine's local job slots: its helper's capacity, or its owner's lower limit. Cloud slots aren't limited by it. */
 export const slotsOf = (r: { capacity?: number | null; job_limit?: number | null }) =>
   Math.min(Number(r.capacity ?? 1), r.job_limit == null ? Infinity : Number(r.job_limit));
 
@@ -390,7 +408,7 @@ export async function linedUp(db: Db, userId: string, opts: { next?: number; all
   const byId = new Map(tree.map((n) => [n.id, n]));
   const queued = orderQueue(queuedRaw, rk);
   const busy = await loadBusy(db, userId, queued.flatMap((r) => r.after));
-  const workers = machines.filter((m) => m.online && m.takingJobs && m.slots > 0);
+  const workers = machines.filter((m) => m.online && m.takingJobs && (m.slots > 0 || (m.cloudSlots ?? 0) > 0));
 
   const items = queued.map((r) => {
     let why = heldBack(r, busy);
@@ -398,6 +416,7 @@ export async function linedUp(db: Db, userId: string, opts: { next?: number; all
     if (!why) {
       const reasons = new Set<string>();
       for (const m of workers) {
+        if (poolFor(m, r.runner).slots <= 0) continue;
         const c = checkoutFor(r, m.offer);
         if ("why" in c) { reasons.add(`${m.name}: ${c.why}`); continue; }
         const blocked = turnBlocked(r, m.id, c.branch, busy);
@@ -447,6 +466,11 @@ export async function linedUp(db: Db, userId: string, opts: { next?: number; all
     perApp: [...perApp.values()].sort((a, b) => appOrder(a.app) - appOrder(b.app) || a.app.localeCompare(b.app)),
     perMachine: machines.filter((m) => m.online).map((m) => ({
       name: m.name, takingJobs: m.takingJobs, slots: m.slots, running: m.running, free: Math.max(0, m.slots - m.running),
+      /** Cloud slots, when it runs cloud jobs in their own (null = it can't run cloud jobs, or an older helper: they use the slots above). */
+      ...(() => {
+        const cloudSlots = m.offer.claudeCloud || m.offer.cloudroomProviders.length ? m.cloudSlots : null;
+        return { cloudSlots, cloudRunning: m.cloudRunning, cloudFree: cloudSlots == null ? null : Math.max(0, cloudSlots - m.cloudRunning) };
+      })(),
       /** Ready items this machine could run. */
       canTake: ready.filter((i) => i.canRunOn.includes(m.name)).length,
       /** Waiting items pinned to it. */
