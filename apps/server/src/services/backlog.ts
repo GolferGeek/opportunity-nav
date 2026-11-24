@@ -46,6 +46,7 @@ export interface QueuedRow {
   project_id: string;
   repo_remote: string | null;
   provider: string;
+  model?: string | null;
   runner: string;
   needs: string[];
   node_id: string | null;
@@ -126,6 +127,8 @@ export interface Offer {
   checkouts: OfferedCheckout[];
   /** It has its own local models (Ollama). */
   localModels: boolean;
+  /** Models reported for each provider. */
+  providerModels?: Record<string, string[]>;
 }
 
 export interface OfferedCheckout { path: string; remote?: string; branch?: string; linked?: boolean; defaultBranch?: string }
@@ -162,6 +165,9 @@ export function checkoutFor(r: QueuedRow, m: Offer): { path: string; branch: str
   }
   if (r.runner === "direct" && !r.needs.every((n) => m.tools.includes(n))) return { why: `needs ${r.needs.join(", ")}` };
   if (r.local_model && !m.localModels) return { why: "no local models" };
+  if (r.runner === "direct" && r.provider === "ollama" && r.model && !(m.providerModels?.ollama ?? []).includes(r.model)) {
+    return { why: `no Ollama model ${r.model}` };
+  }
   if (r.kind === "continue" && r.checkout_path) return { path: r.checkout_path, branch: r.checkout_branch };
   if (!r.repo_remote) return { why: "no repo" };
   const same = m.checkouts.filter((c) => c.remote && normaliseRemote(c.remote) === r.repo_remote);
@@ -400,6 +406,7 @@ export async function onlineMachines(db: Db, userId: string): Promise<MachineVie
         tools: (r.tools ?? []) as string[],
         checkouts: (r.checkouts ?? []) as Offer["checkouts"],
         localModels: hasLocalModels(providers),
+        providerModels: Object.fromEntries(providers.map((p) => [p.provider, p.models ?? []])),
       },
     });
   }

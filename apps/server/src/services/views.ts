@@ -42,10 +42,10 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
   const inScope = scopeId ? subtreeIds(tree, scopeId) : null;
 
   const [questions, roadblocks, jobs, external] = await Promise.all([
-    db`select q.*, j.title as job_title, w.title as work_title, w.url as work_url from questions q
+    db`select q.*, j.title as job_title, j.item_id, w.title as work_title, w.url as work_url from questions q
        left join jobs j on j.id = q.job_id left join external_work w on w.id = q.external_work_id
        where q.user_id = ${userId} and q.status = 'open' and (w.id is null or w.gone_at is null)`,
-    db`select r.*, j.title as job_title from roadblocks r left join jobs j on j.id = r.job_id
+    db`select r.*, j.title as job_title, j.item_id from roadblocks r left join jobs j on j.id = r.job_id
        where r.user_id = ${userId} and r.status = 'open'`,
     db`select j.*, n.name as machine from jobs j left join nodes n on n.id = j.node_id
        where j.user_id = ${userId} and j.status in ('queued', 'running')
@@ -55,8 +55,8 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
   ]);
 
   const groups = new Map<string | null, HappeningItem[]>();
-  const add = (projectId: string | null, item: HappeningItem) => {
-    if (inScope && (!projectId || !inScope.has(projectId))) return;
+  const add = (projectId: string | null, item: HappeningItem, itemId?: string | null) => {
+    if (inScope && !((projectId && inScope.has(projectId)) || (itemId && inScope.has(itemId)))) return;
     const g = groups.get(projectId) ?? [];
     g.push(item);
     groups.set(projectId, g);
@@ -65,14 +65,14 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
     add(q.project_id, {
       kind: "question", id: q.id, title: q.body, detail: q.context ?? q.job_title ?? q.work_title ?? null,
       status: "open", at: q.created_at, jobId: q.job_id, externalId: q.external_work_id, options: q.options, url: q.work_url,
-    });
+    }, q.item_id);
   for (const r of roadblocks)
-    add(r.project_id, { kind: "roadblock", id: r.id, title: r.body, detail: r.job_title, status: "open", at: r.created_at, jobId: r.job_id });
+    add(r.project_id, { kind: "roadblock", id: r.id, title: r.body, detail: r.job_title, status: "open", at: r.created_at, jobId: r.job_id }, r.item_id);
   for (const j of jobs)
     add(j.project_id, {
       kind: "job", id: j.id, title: j.title, detail: j.last_progress, status: j.status, at: j.updated_at, jobId: j.id,
       provider: j.provider, model: j.model, machine: j.machine, runsOn: runsOnRow(j),
-    });
+    }, j.item_id);
   for (const w of external)
     add(w.project_id, {
       kind: "external", id: w.id, title: w.title, detail: lastActivity(w.detail) ?? w.summary, status: w.status, at: w.updated_at, startedAt: w.started_at, externalId: w.id,

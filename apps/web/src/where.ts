@@ -16,6 +16,9 @@ export type MachineLite = {
   online?: boolean;
   takingJobs?: boolean;
   tools?: string[];
+  checkouts?: { remote?: string }[];
+  capacity?: number;
+  cloudCapacity?: number | null;
   providers?: { provider: string; signedIn?: boolean; canRunJobs?: boolean; models?: string[] }[];
   cloudroom?: { providers?: string[] } | null;
   claudeCloud?: { ready?: boolean; repos?: string[] } | null;
@@ -29,8 +32,8 @@ export const runsAgent = (m: MachineLite, provider: string) =>
 
 /**
  * The choices for this agent, repo and needs. Only machines online and taking jobs
- * count. A machine is greyed out when it can't run this agent or lacks a need
- * (whether it has the repo checked out isn't known here). Claude's cloud shows
+ * count. A machine is greyed out when it can't run this agent, lacks the repo
+ * checkout or a need, or has no slots for direct jobs. Claude's cloud shows
  * only when an online machine's routine covers the project's repo (an item has no
  * repo of its own, so it's the project's), and Cloudroom only when an online
  * machine has it; each is greyed out for an agent it can't run.
@@ -42,7 +45,12 @@ export function whereOptions(machines: MachineLite[], provider: string, repo: st
   const opts: WhereOption[] = [{ value: ANY_MACHINE, label: "Any machine" }];
   for (const m of online) {
     const missing = needs.filter((n) => !(m.tools ?? []).includes(n));
-    const why = !runsAgent(m, provider) ? names.agent(provider) : missing.length ? names.needs(missing) : null;
+    const hasRepo = repo !== null && (m.checkouts ?? []).some((c) => c.remote === repo);
+    const why = !runsAgent(m, provider) ? names.agent(provider)
+      : !hasRepo ? "repo checkout"
+      : missing.length ? names.needs(missing)
+      : (m.capacity ?? 0) <= 0 ? "job slots"
+      : null;
     opts.push({ value: `machine:${m.id}`, label: `On ${shortName(m.name)}${why ? ` (no ${why})` : ""}`, disabled: why !== null });
   }
   if (claudeCloudCovers(online, repo)) {
@@ -58,10 +66,12 @@ export function whereOptions(machines: MachineLite[], provider: string, repo: st
 
 /** Only a routine that covers the project's repo can run it (the server matches the same way). */
 export const claudeCloudCovers = (online: MachineLite[], repo: string | null) =>
-  repo !== null && online.some((m) => m.claudeCloud?.ready && (m.claudeCloud.repos ?? []).includes(repo));
+  repo !== null && online.some((m) => cloudSlots(m) > 0 && m.claudeCloud?.ready && (m.claudeCloud.repos ?? []).includes(repo));
 
 export const cloudroomProviders = (online: MachineLite[]) =>
-  [...new Set(online.filter((m) => m.cloudroom).flatMap((m) => m.cloudroom?.providers ?? []))];
+  [...new Set(online.filter((m) => m.cloudroom && cloudSlots(m) > 0).flatMap((m) => m.cloudroom?.providers ?? []))];
+
+const cloudSlots = (m: MachineLite) => m.cloudCapacity ?? m.capacity ?? 0;
 
 /** The chosen value if it's still offered and enabled, else any machine (so a stale choice never sticks). */
 export function keepWhere(where: Where, opts: WhereOption[]): Where {

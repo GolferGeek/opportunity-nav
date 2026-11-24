@@ -157,10 +157,12 @@ function StartJob({ node, project, prefill, onStarted, onError }: {
   const inCloud = runner !== "direct";
   // The models to pick from: on the chosen machine, else on any machine (none count in a cloud).
   const pool = useMemo(() => (inCloud ? [] : machineId ? machines.filter((m) => m.id === machineId) : machines), [inCloud, machineId, machines]);
-  const modelOpts = useMemo(() => modelOptions(provider, pool, recent, projectModel, defaultModelLabel(projectModel)),
-    [provider, pool, recent, projectModel]);
+  const modelOpts = useMemo(() => runner === "claude-cloud"
+    ? [{ value: "", label: "Routine model (set in Claude)" }]
+    : modelOptions(provider, pool, recent, projectModel, defaultModelLabel(projectModel)),
+    [provider, pool, recent, projectModel, runner]);
   // "Other…" shows a box to type any id; so does a model that isn't in the list.
-  const modelPick = form.typing ? OTHER_MODEL : modelChoice(v.model, modelOpts);
+  const modelPick = runner === "claude-cloud" ? "" : form.typing ? OTHER_MODEL : modelChoice(v.model, modelOpts);
   const go = async () => {
     if (!form.prompt.trim()) return;
     setBusy(true);

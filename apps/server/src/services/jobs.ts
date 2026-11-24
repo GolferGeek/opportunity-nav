@@ -85,7 +85,7 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
     const [job] = await tx`
       insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by, needs, push,
                         backlog, app, held, after, local_model, branch, key, position, item_id)
-      values (${userId}, ${project.id}, ${title}, ${j.prompt}, ${provider}, ${j.model ?? (provider === project.defaultProvider ? project.defaultModel : null) ?? null},
+      values (${userId}, ${project.id}, ${title}, ${j.prompt}, ${provider}, ${runner === "claude-cloud" ? null : j.model ?? (provider === project.defaultProvider ? project.defaultModel : null) ?? null},
               ${location}, ${j.effort ?? null}, ${runner}, 'queued', ${j.machineId ?? null}, ${j.machineId != null}, ${j.issueUrl ?? null}, ${createdBy},
               ${tx.json(needs)}, ${j.push ?? false}, ${j.backlog ?? false}, ${j.app ?? null}, ${j.held ?? false}, ${tx.json(j.after ?? [])},
               ${j.localModel ?? false}, ${j.branch ?? null}, ${j.key ?? null}, 0, ${j.nodeId})
@@ -214,6 +214,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
       id: machineId, providers: req.providers, cloudroomProviders: req.cloudroomProviders, claudeCloud: req.claudeCloud,
       claudeCloudRepos: req.claudeCloud ? (req.claudeCloudRepos ?? []).map(normaliseRemote) : [],
       tools: machine.tools ?? [], checkouts: machine.checkouts ?? [], localModels: hasLocalModels(machine.providers ?? []),
+      providerModels: Object.fromEntries(((machine.providers ?? []) as { provider: string; models?: string[] }[]).map((p) => [p.provider, p.models ?? []])),
     };
     const rows = orderQueue(await queuedRows(tx, userId), await loadRanking(tx, userId));
     const busy = await loadBusy(tx, userId, rows.flatMap((r) => r.after));

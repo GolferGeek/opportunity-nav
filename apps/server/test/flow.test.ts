@@ -114,6 +114,9 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     const job = await ok(ui, "POST", "/api/jobs", { nodeId: item.id, prompt: "Fix the login page" });
     assert.equal(job.projectId, projectId, "it still runs in the item's project");
     assert.ok((await ok(ui, "GET", "/api/attended")).includes(item.id));
+    assert.equal((await ok(ui, "GET", `/api/jobs?scope=${item.id}`))[0]?.id, job.id, "the item's recent jobs include its job");
+    assert.equal((await ok(ui, "GET", `/api/happening?scope=${item.id}`)).flatMap((g: any) => g.items).find((i: any) => i.kind === "job")?.id,
+      job.id, "the item's happening view includes its job");
     await ok(ui, "POST", `/api/jobs/${job.id}/cancel`);
     assert.ok(!(await ok(ui, "GET", "/api/attended")).includes(item.id), "a cancelled job leaves it unattended");
     await ok(ui, "PATCH", `/api/tree/${item.id}`, { archived: true });

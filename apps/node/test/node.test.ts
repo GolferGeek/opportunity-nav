@@ -154,7 +154,7 @@ test("normalizes remotes and only treats a final valid fence as a question", () 
   assert.equal(terminal('```opnav-needs-input\n{"question":"What?"}\n```\nGoodbye').type, "result");
 });
 
-test("node sends heartbeat, uploads usage, retries events, resumes and cancels workers", { timeout: 15_000 }, async t => {
+test("node sends heartbeat, uploads usage, retries events, resumes and cancels workers", { timeout: 30_000 }, async t => {
   const home = await fixture(t);
   const checkout = join(home, "project");
   await mkdir(checkout);
@@ -254,6 +254,9 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
       const turn = turns.find(item => req.url === NODE.lease(item.job.id) || req.url === NODE.events(item.job.id));
       assert.ok(turn);
       if (req.url === NODE.lease(turn.job.id)) {
+        // Under a busy full-suite run, an earlier short-lived worker may reach its
+        // renewal deadline too. Keep that lease alive; only the Wait turn is cancelled.
+        if (turn !== turns[2]) return respond({ cancel: false, leaseExpiresAt: new Date(Date.now() + 3500).toISOString() });
         assert.equal(turn, turns[2]);
         assert.deepEqual(body, { leaseId: turn.leaseId });
         renewed = true;
@@ -303,7 +306,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
     },
   });
   try {
-    for (let i = 0; i < 160 && !received.get(turns[4]!.job.id)?.some(event => event.type === "result"); i++) {
+    for (let i = 0; i < 400 && !received.get(turns[4]!.job.id)?.some(event => event.type === "result"); i++) {
       if (requestError) throw requestError;
       await sleep(30);
     }

@@ -12,13 +12,15 @@ const localModels = (p: string) => p === "ollama" || p === "mlx";
 const codexDocker: ProjectDefaults = { defaultProvider: "codex", defaultModel: "gpt-5-codex", defaultLocation: null, defaultNeeds: ["docker"], repoRemote: "github.com/o/r" };
 const studio: MachineLite = {
   id: "m1", name: "Mac-Studio.local", online: true, takingJobs: true, tools: ["docker"],
+  capacity: 3, cloudCapacity: 2, checkouts: [{ remote: "github.com/o/r" }],
   providers: [
     { provider: "codex", signedIn: true, canRunJobs: true },
     { provider: "ollama", signedIn: true, canRunJobs: true, models: ["qwen3:32b"] },
   ],
   cloudroom: { providers: ["codex", "claude"] },
 };
-const laptop: MachineLite = { id: "m2", name: "Omarchy", online: true, takingJobs: true, tools: [], providers: [{ provider: "codex", signedIn: true, canRunJobs: true }] };
+const laptop: MachineLite = { id: "m2", name: "Omarchy", online: true, takingJobs: true, tools: [], capacity: 1,
+  checkouts: [{ remote: "github.com/o/r" }], providers: [{ provider: "codex", signedIn: true, canRunJobs: true }] };
 const machines = [studio, laptop];
 
 const run = (...actions: FormAction[]) => actions.reduce(formReducer, initialForm("Fix login"));

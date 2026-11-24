@@ -6,11 +6,13 @@ const agent = (p: string) => ({ claude: "Claude", codex: "Codex", ollama: "Ollam
 const names = { agent, needs: (n: string[]) => n.join(" and ") };
 const studio: MachineLite = {
   id: "m1", name: "Mac-Studio.local", online: true, takingJobs: true,
+  capacity: 3, cloudCapacity: 2, checkouts: [{ remote: "github.com/me/app" }],
   providers: [{ provider: "claude", signedIn: true, canRunJobs: true }, { provider: "codex", signedIn: true, canRunJobs: true }],
   cloudroom: { providers: ["claude", "codex"] },
   claudeCloud: { ready: true, repos: ["github.com/me/app"] },
 };
-const omarchy: MachineLite = { id: "m2", name: "omarchy", online: true, providers: [{ provider: "claude", signedIn: true, canRunJobs: true }] };
+const omarchy: MachineLite = { id: "m2", name: "omarchy", online: true, capacity: 1,
+  checkouts: [{ remote: "github.com/me/app" }], providers: [{ provider: "claude", signedIn: true, canRunJobs: true }] };
 const values = (o: { value: string }[]) => o.map((x) => x.value);
 
 test("any machine comes first, so the default needs no clicks", () => {
@@ -40,8 +42,15 @@ test("offline machines and machines not taking jobs aren't offered, and their cl
 });
 
 test("a machine without a chosen need is greyed out", () => {
-  const opts = whereOptions([{ ...studio, tools: ["docker"] }, omarchy], "claude", null, ["docker"], names);
+  const opts = whereOptions([{ ...studio, tools: ["docker"] }, omarchy], "claude", "github.com/me/app", ["docker"], names);
   assert.deepEqual(opts.slice(1, 3).map((o) => [o.label, o.disabled]), [["On Mac-Studio", false], ["On omarchy (no docker)", true]]);
+});
+
+test("a machine without the repo or any direct slots is greyed out", () => {
+  const opts = whereOptions([studio, { ...omarchy, capacity: 0 }, { ...omarchy, id: "m3", checkouts: [] }], "claude", "github.com/me/app", [], names);
+  assert.deepEqual(opts.slice(1, 4).map((o) => [o.label, o.disabled]), [
+    ["On Mac-Studio", false], ["On omarchy (no job slots)", true], ["On omarchy (no repo checkout)", true],
+  ]);
 });
 
 test("choices an agent can't use are greyed out and fall back to any machine", () => {

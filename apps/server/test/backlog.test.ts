@@ -89,4 +89,10 @@ describe("which checkout a job runs in", () => {
     assert.deepEqual(checkoutFor(row("c", { repo_remote: legal, runner: "claude-cloud", kind: "continue", checkout_path: "/x" }), { ...box, claudeCloudRepos: [] }),
       { why: "its Claude routine doesn't cover the repo" });
   });
+
+  test("an explicit Ollama model goes only to a machine that has it", () => {
+    const box: Offer = { ...studio, providers: ["ollama"], providerModels: { ollama: ["qwen3:32b"] } };
+    assert.ok(!("why" in checkoutFor(row("o", { repo_remote: legal, provider: "ollama", model: "qwen3:32b" }), box)));
+    assert.deepEqual(checkoutFor(row("o", { repo_remote: legal, provider: "ollama", model: "gemma3" }), box), { why: "no Ollama model gemma3" });
+  });
 });
