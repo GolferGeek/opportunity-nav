@@ -660,7 +660,8 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await ok(bui, "GET", "/api/lined-up?all=1")).next.length, 5, "all = held ones too");
 
     // A job started right away goes first; then the ranking.
-    await act("start_job", { repo: "github.com/example/lib", prompt: "Right now" });
+    const rightNow = await act("start_job", { repo: "github.com/example/lib", prompt: "Right now" });
+    assert.match(await actFails("update_backlog_item", { jobId: rightNow.id, changes: { held: true } }), /started right away/);
     await act("set_machine", { machine: "laptop2", takingJobs: true, jobLimit: 2 });
     lu = await act("get_lined_up", {});
     assert.equal(lu.perMachine.find((m: any) => m.name === "laptop2").slots, 2, "the owner's limit");

@@ -83,17 +83,25 @@ export const appOf = (r: Pick<QueuedRow, "app" | "project_id">, rk: Ranking) => 
 
 const time = (d: Date | string | undefined) => (d ? new Date(d).getTime() : 0);
 
-/** Sort key: lower goes first. */
-function sortKey(r: QueuedRow, rk: Ranking): number[] {
+/** Sort key: lower goes first. fallback = each unranked app's place after the ranked ones. */
+function sortKey(r: QueuedRow, rk: Ranking, fallback: Map<string, number>): number[] {
   if (r.kind === "continue") return [0, 0, 0, time(r.turn_created_at ?? r.created_at)];
   if (!r.backlog) return [1, 0, 0, time(r.turn_created_at ?? r.created_at)];
-  const ranked = rk.apps.get(key(appOf(r, rk)));
-  const app = ranked ?? 1_000_000 + (rk.tree.get(r.project_id) ?? 999_999);
-  return [2, app, Number(r.position), time(r.created_at)];
+  const app = key(appOf(r, rk));
+  return [2, rk.apps.get(app) ?? 1_000_000 + fallback.get(app)!, Number(r.position), time(r.created_at)];
 }
 
 export function orderQueue<T extends QueuedRow>(rows: T[], rk: Ranking): T[] {
-  const keys = new Map(rows.map((r) => [r, sortKey(r, rk)]));
+  // An app that isn't ranked goes where its first project sits in the tree, as one group.
+  const firstAt = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.backlog || r.kind === "continue") continue;
+    const app = key(appOf(r, rk));
+    if (rk.apps.has(app)) continue;
+    firstAt.set(app, Math.min(firstAt.get(app) ?? Infinity, rk.tree.get(r.project_id) ?? 999_999));
+  }
+  const fallback = new Map([...firstAt].sort(([a, x], [b, y]) => x - y || a.localeCompare(b)).map(([app], i) => [app, i]));
+  const keys = new Map(rows.map((r) => [r, sortKey(r, rk, fallback)]));
   return [...rows].sort((a, b) => {
     const x = keys.get(a)!, y = keys.get(b)!;
     for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
@@ -256,6 +264,7 @@ export async function updateBacklogItem(sql: Sql, userId: string, jobId: string,
   return sql.begin(async (tx) => {
     const [j] = await tx`select * from jobs where id = ${jobId} and user_id = ${userId} for update`;
     if (!j) throw new HttpError(404, "No such job.");
+    if (!j.backlog) throw new HttpError(409, "That job was started right away, not added to the backlog. Use cancel_job to stop it.");
     if (j.status !== "queued") throw new HttpError(409, `It has ${j.status === "running" ? "started" : `already ${j.status}`}, so it can't be changed now. Cancel it instead.`);
     const notStarted = Number(j.attempts) === 0;
     const started = (what: string) => { if (!notStarted) throw new HttpError(409, `It has already run once, so its ${what} can't change.`); };
@@ -290,7 +299,7 @@ export async function updateBacklogItem(sql: Sql, userId: string, jobId: string,
       await tx`update jobs set ${tx(set)} where id = ${jobId}`;
     }
     const moved = changes.top || changes.before !== undefined || changes.app !== undefined;
-    if (moved && j.backlog && notStarted) await placeInApp(tx, userId, jobId, { top: changes.top, before: changes.before ?? null });
+    if (moved && notStarted) await placeInApp(tx, userId, jobId, { top: changes.top, before: changes.before ?? null });
     const [row] = await tx`select j.*, n.name as machine from jobs j left join nodes n on n.id = j.node_id where j.id = ${jobId}`;
     return backlogRow(row);
   });
