@@ -69,6 +69,19 @@ export function queueCounts(t: { waiting: number; held: number; running: number 
   return parts.join(" · ");
 }
 
+/**
+ * The queue block's line saying what it holds, true for what's there: only ready
+ * jobs start by themselves; held ones wait to be let go, others for what they
+ * need (each says what). Null when nothing is queued or held.
+ */
+export function queueNote(t: { waiting: number; ready: number; held: number }): string | null {
+  if (t.waiting === 0 && t.held === 0) return null;
+  if (t.waiting === 0) return "Queued jobs, all on hold. Each starts once it's let go.";
+  if (t.ready === t.waiting && t.held === 0) return "Queued jobs. Each starts by itself when a machine is free.";
+  if (t.ready === 0) return "Queued jobs. None can start yet; each says what it waits for.";
+  return "Queued jobs. The ready ones start by themselves when a machine is free.";
+}
+
 /** The queue block's running-low line, when fewer jobs are ready than the machines have room for; else null. */
 export function queueLow(r: { low: boolean; ready: number; slots: number }): string | null {
   if (!r.low) return null;

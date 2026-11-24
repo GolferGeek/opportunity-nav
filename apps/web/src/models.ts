@@ -35,10 +35,11 @@ const MAX_RECENT = 8;
  * The choices for this agent: its default, then the known models, then "Other…".
  * machines: the machines the job could run on (only online ones taking jobs count).
  * recent: the user's recent jobs, newest first. also: a model to keep offered (the project's default).
+ * defaultLabel: what the empty choice is called ("Project default (…)" when it means the project's model).
  */
-export function modelOptions(provider: string, machines: MachineLite[], recent: RecentJob[], also?: string | null): ModelOption[] {
+export function modelOptions(provider: string, machines: MachineLite[], recent: RecentJob[], also?: string | null, defaultLabel = "Default model"): ModelOption[] {
   const seen = new Set<string>();
-  const out: ModelOption[] = [{ value: DEFAULT_MODEL, label: "Default model" }];
+  const out: ModelOption[] = [{ value: DEFAULT_MODEL, label: defaultLabel }];
   const add = (value: string, label = value) => {
     const v = value.trim();
     if (!v || seen.has(v)) return;

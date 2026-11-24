@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, needsText, providerName, runsOnText, type Need, type Priority, type TreeNode } from "./api.ts";
-import { ANY_MACHINE, keepWhere, whereOptions, whereToJob, type MachineLite, type Where } from "./where.ts";
+import { keepWhere, whereOptions, whereToJob, type MachineLite } from "./where.ts";
 import { OTHER_MODEL, modelChoice, modelOptions, type RecentJob } from "./models.ts";
-import { itemPrompt } from "./attended.ts";
+import { autoOpen, itemPrompt } from "./attended.ts";
+import { defaultLocationLabel, defaultModelLabel, formReducer, initialForm, jobBody, shown } from "./newJob.ts";
 
-export function Detail({ node, path, unattended, attendedKnown, onChanged, onOpenJob, onError, onSelect }: {
+export function Detail({ node, project, path, unattended, attendedKnown, onChanged, onOpenJob, onError, onSelect }: {
   node: TreeNode;
+  /** Its nearest project (itself, if it is one): whose defaults a new job starts from. */
+  project: TreeNode | null;
   path: string[];
   /** An item nothing is working on: opening it opens the new-job form, ready to go. */
   unattended: boolean;
@@ -26,9 +29,9 @@ export function Detail({ node, path, unattended, attendedKnown, onChanged, onOpe
   }, [node.id]);
   useEffect(() => {
     // Once per visit, once we know: an unattended item opens straight to the new-job form.
-    if (!attendedKnown || autoOpened === node.id) return;
-    setAutoOpened(node.id);
-    if (unattended) setStarting(true);
+    const next = autoOpen(autoOpened, node.id, unattended, attendedKnown);
+    if (next.seen !== autoOpened) setAutoOpened(next.seen);
+    if (next.open) setStarting(true);
   }, [node.id, unattended, attendedKnown, autoOpened]);
   const patch = async (body: object) => {
     try {
@@ -66,7 +69,7 @@ export function Detail({ node, path, unattended, attendedKnown, onChanged, onOpe
       )}
       {!editing && node.notes && <p className="notes">{node.notes}</p>}
       {editing && <EditForm node={node} patch={patch} onArchived={() => onSelect(node.parentId)} />}
-      {starting && <StartJob key={node.id} node={node} prefill={unattended} onStarted={(id) => { setStarting(false); onChanged(); onOpenJob(id); }} onError={onError} />}
+      {starting && <StartJob key={node.id} node={node} project={project} prefill={unattended} onStarted={(id) => { setStarting(false); onChanged(); onOpenJob(id); }} onError={onError} />}
       <RecentJobs nodeId={node.id} onOpenJob={onOpenJob} />
     </header>
   );
@@ -123,72 +126,46 @@ function EditForm({ node, patch, onArchived }: { node: TreeNode; patch: (b: obje
  * The new-job form, the one place a job is picked and started. Opened for an
  * unattended item (`prefill`), it starts from the item's name and notes, so
  * picking where it runs, the agent and the model, then Start, is all it takes.
+ * It starts from the nearest project's defaults and sends only what's changed
+ * (see newJob.ts), so the server applies the project's agent, model and needs.
  */
-function StartJob({ node, prefill, onStarted, onError }: { node: TreeNode; prefill?: boolean; onStarted: (id: string) => void; onError: (m: string) => void }) {
-  const [prompt, setPrompt] = useState(() => (prefill ? itemPrompt(node) : ""));
-  const [provider, setProvider] = useState(node.defaultProvider ?? "claude");
-  const [model, setModel] = useState(node.defaultModel ?? "");
-  const [location, setLocation] = useState(node.defaultLocation ?? "");
-  // One "Where it runs" choice: any machine (the default), one machine, or a cloud.
-  const [where, setWhere] = useState<Where>(ANY_MACHINE);
-  const [needs, setNeeds] = useState<Need[]>(node.defaultNeeds ?? []);
+function StartJob({ node, project, prefill, onStarted, onError }: {
+  node: TreeNode; project: TreeNode | null; prefill?: boolean; onStarted: (id: string) => void; onError: (m: string) => void;
+}) {
+  const [form, dispatch] = useReducer(formReducer, undefined, () => initialForm(prefill ? itemPrompt(node) : ""));
+  const v = shown(form, project);
+  const { provider, needs, projectModel } = v;
   const localModels = LOCAL_MODEL_PROVIDERS.includes(provider);
-  useEffect(() => { if (!localModels && location === "local") setLocation(""); }, [localModels, location]);
   const [busy, setBusy] = useState(false);
-  // The machines, and the repo of the node's project (what Claude's cloud routines are matched on).
+  // The machines, and the user's recent jobs: the models each agent ran lately, for the model list.
   const [machines, setMachines] = useState<MachineLite[]>([]);
-  const [repo, setRepo] = useState<string | null>(null);
-  // The user's recent jobs: the models each agent ran lately, for the model list.
   const [recent, setRecent] = useState<RecentJob[]>([]);
   useEffect(() => {
     let live = true;
+    void api<MachineLite[]>("GET", "/api/machines").then((ms) => live && setMachines(ms)).catch(() => {});
     void api<RecentJob[]>("GET", "/api/jobs").then((j) => live && setRecent(j)).catch(() => {});
     return () => { live = false; };
   }, []);
-  useEffect(() => {
-    let live = true;
-    setRepo(null);
-    // The job runs in the node's project (an item's nearest project above it), as the server resolves it.
-    void Promise.all([api<MachineLite[]>("GET", "/api/machines"), api<TreeNode[]>("GET", "/api/tree")]).then(([ms, tree]) => {
-      if (!live) return;
-      const byId = new Map(tree.map((n) => [n.id, n]));
-      let project: TreeNode | undefined = byId.get(node.id) ?? node;
-      while (project && project.kind !== "project") project = project.parentId ? byId.get(project.parentId) : undefined;
-      setMachines(ms);
-      setRepo(project?.repoRemote ?? null);
-    }).catch(() => {});
-    return () => { live = false; };
-  }, [node.id, node.repoRemote]);
+  // The project's repo is what Claude's cloud routines are matched on; an item has none of its own.
+  const repo = project?.repoRemote ?? null;
   const whereOpts = useMemo(() => whereOptions(machines, provider, repo, needs, { agent: providerName, needs: needsText }),
     [machines, provider, repo, needs]);
   // A choice that stops fitting (another agent, a routine that no longer covers the repo) goes back to any machine.
-  const chosen = keepWhere(where, whereOpts);
-  useEffect(() => { if (chosen !== where) setWhere(chosen); }, [chosen, where]);
+  const chosen = keepWhere(form.where, whereOpts);
+  useEffect(() => { if (chosen !== form.where) dispatch({ type: "where", value: chosen }); }, [chosen, form.where]);
   const { runner, machineId } = whereToJob(chosen);
   const inCloud = runner !== "direct";
   // The models to pick from: on the chosen machine, else on any machine (none count in a cloud).
   const pool = useMemo(() => (inCloud ? [] : machineId ? machines.filter((m) => m.id === machineId) : machines), [inCloud, machineId, machines]);
-  const projectModel = provider === node.defaultProvider ? node.defaultModel : null;
-  const modelOpts = useMemo(() => modelOptions(provider, pool, recent, projectModel), [provider, pool, recent, projectModel]);
+  const modelOpts = useMemo(() => modelOptions(provider, pool, recent, projectModel, defaultModelLabel(projectModel)),
+    [provider, pool, recent, projectModel]);
   // "Other…" shows a box to type any id; so does a model that isn't in the list.
-  const [typing, setTyping] = useState(false);
-  const modelPick = typing ? OTHER_MODEL : modelChoice(model, modelOpts);
-  const pickProvider = (p: string) => {
-    setProvider(p);
-    // A model id belongs to one agent: a new agent starts at its default (or the project's model for it).
-    setModel(p === node.defaultProvider ? node.defaultModel ?? "" : "");
-    setTyping(false);
-  };
-  const pickModel = (v: string) => {
-    setTyping(v === OTHER_MODEL);
-    setModel(v === OTHER_MODEL ? "" : v);
-  };
+  const modelPick = form.typing ? OTHER_MODEL : modelChoice(v.model, modelOpts);
   const go = async () => {
-    if (!prompt.trim()) return;
+    if (!form.prompt.trim()) return;
     setBusy(true);
     try {
-      const j = await api("POST", "/api/jobs", { nodeId: node.id, prompt, provider, model: model.trim() || undefined,
-        location: inCloud ? "cloud" : location || undefined, runner, machineId, needs });
+      const j = await api("POST", "/api/jobs", jobBody(node.id, form, project, whereOpts, (p) => LOCAL_MODEL_PROVIDERS.includes(p)));
       onStarted(j.id);
     } catch (e) {
       onError((e as Error).message);
@@ -198,34 +175,34 @@ function StartJob({ node, prefill, onStarted, onError }: { node: TreeNode; prefi
   };
   return (
     <form className="start-job card" onSubmit={(e) => { e.preventDefault(); void go(); }}>
-      <textarea autoFocus rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="What should the agent do?"
+      <textarea autoFocus rows={4} value={form.prompt} onChange={(e) => dispatch({ type: "prompt", value: e.target.value })} placeholder="What should the agent do?"
         onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void go(); }} />
       <div className="row-buttons">
-        <select value={provider} onChange={(e) => pickProvider(e.target.value)} aria-label="Agent">
-          {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        <select value={provider} onChange={(e) => dispatch({ type: "provider", value: e.target.value })} aria-label="Agent">
+          {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.name}{p.id === project?.defaultProvider ? " (project default)" : ""}</option>)}
         </select>
-        <select value={modelPick} onChange={(e) => pickModel(e.target.value)} aria-label="Model"
-          title="Default model: the agent picks. The list is what your machines have and what this agent ran lately.">
+        <select value={modelPick} onChange={(e) => dispatch({ type: "model", value: e.target.value })} aria-label="Model"
+          title="Project default: the project's model. Default model: the agent picks. The list is what your machines have and what this agent ran lately.">
           {modelOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         {modelPick === OTHER_MODEL && (
-          <input autoFocus={typing} value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model id" aria-label="Model id" />
+          <input autoFocus={form.typing} value={v.model} onChange={(e) => dispatch({ type: "typeModel", value: e.target.value })} placeholder="Model id" aria-label="Model id" />
         )}
         {/* Only Ollama and MLX can run their model on the machine itself; every other agent's model is in the cloud, so there's nothing to pick. */}
         {localModels && !inCloud && (
-          <select value={location} onChange={(e) => setLocation(e.target.value)} aria-label="Model location">
-            <option value="">Model: default</option>
+          <select value={v.location} onChange={(e) => dispatch({ type: "location", value: e.target.value as "" | "local" | "cloud" })} aria-label="Model location">
+            <option value="">{defaultLocationLabel(project)}</option>
             <option value="local">Local model</option>
             <option value="cloud">Cloud model</option>
           </select>
         )}
-        <select value={chosen} onChange={(e) => setWhere(e.target.value)} aria-label="Where it runs"
+        <select value={chosen} onChange={(e) => dispatch({ type: "where", value: e.target.value })} aria-label="Where it runs"
           title="Any machine: the first free one that can run it. A cloud runs it in its own sandbox, starting from the repo on GitHub, and pushes the work to a branch.">
           {whereOpts.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
         </select>
-        {!inCloud && <span className="needs-pick muted" title="Only a machine that has these takes the job.">Needs <NeedsPicker value={needs} onChange={setNeeds} /></span>}
+        {!inCloud && <span className="needs-pick muted" title="Only a machine that has these takes the job.">Needs <NeedsPicker value={needs} onChange={(n) => dispatch({ type: "needs", value: n })} /></span>}
         <span className="spacer" />
-        <button type="submit" className="primary" disabled={busy || !prompt.trim()}>Start</button>
+        <button type="submit" className="primary" disabled={busy || !form.prompt.trim()}>Start</button>
       </div>
     </form>
   );

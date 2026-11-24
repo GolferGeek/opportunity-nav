@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cardEmptyNote, cardWindows, projectLabel, queueCounts, queueLow, readingClass, readingNote } from "../src/labels.ts";
+import { cardEmptyNote, cardWindows, projectLabel, queueCounts, queueLow, queueNote, readingClass, readingNote } from "../src/labels.ts";
 
 test("a handoff's project label is its path below the top area", () => {
   assert.equal(projectLabel("p1", ["Coding", "Orchestrator AI", "Agents Only"]), "Orchestrator AI / Agents Only");
@@ -57,4 +57,13 @@ test("the queue block says when it's running low, and only then", () => {
   assert.equal(queueLow({ low: false, ready: 5, slots: 4 }), null);
   assert.equal(queueLow({ low: true, ready: 1, slots: 4 }), "Running low: 1 ready to start, room for 4.");
   assert.equal(queueLow({ low: true, ready: 0, slots: 2 }), "Running low: none ready to start, room for 2.");
+});
+
+test("the queue block's note is true for what it holds", () => {
+  assert.equal(queueNote({ waiting: 3, ready: 3, held: 0 }), "Queued jobs. Each starts by itself when a machine is free.");
+  assert.equal(queueNote({ waiting: 3, ready: 1, held: 0 }), "Queued jobs. The ready ones start by themselves when a machine is free.");
+  assert.equal(queueNote({ waiting: 3, ready: 3, held: 1 }), "Queued jobs. The ready ones start by themselves when a machine is free.");
+  assert.equal(queueNote({ waiting: 2, ready: 0, held: 0 }), "Queued jobs. None can start yet; each says what it waits for.");
+  assert.equal(queueNote({ waiting: 0, ready: 0, held: 2 }), "Queued jobs, all on hold. Each starts once it's let go.");
+  assert.equal(queueNote({ waiting: 0, ready: 0, held: 0 }), null, "only running jobs: nothing queued to describe");
 });

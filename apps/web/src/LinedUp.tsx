@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ago, api, providerName, runsOnText, usePoll, type RunsOn } from "./api.ts";
-import { queueCounts, queueLow } from "./labels.ts";
+import { queueCounts, queueLow, queueNote } from "./labels.ts";
 
 interface Next {
   id: string;
@@ -51,14 +51,18 @@ export function LinedUp({ onOpenJob, onError }: { onOpenJob: (id: string) => voi
     }
   };
   const update = (jobId: string, changes: object) => act("update_backlog_item", { jobId, changes });
+  // With only running jobs there's no queue to show or act on: just the counts line.
+  const queued = total.waiting + total.held;
+  const open = all && queued > 0;
+  const note = queueNote(total);
   return (
     <div className="lined-up">
       <h4 className="row-head">
         <span>Waiting to start</span>
         <span className="spacer" />
-        <button className="quietbtn" onClick={() => setAll(!all)}>{all ? "Show less" : `Show all (${total.waiting + total.held})`}</button>
+        {queued > 0 && <button className="quietbtn" onClick={() => setAll(!all)}>{all ? "Show less" : `Show all (${queued})`}</button>}
       </h4>
-      <div className="muted small">Queued jobs. Each starts by itself when a machine is free.</div>
+      {note && <div className="muted small">{note}</div>}
       <div className="muted small">{queueCounts(total)}</div>
       {queueLow(runningLow) && <div className="low small">{queueLow(runningLow)}</div>}
       <ol className="next">
@@ -69,7 +73,7 @@ export function LinedUp({ onOpenJob, onError }: { onOpenJob: (id: string) => voi
               {n.app} · {providerName(n.provider)}{n.runsOn ? ` · ${runsOnText(n.runsOn)}` : n.machine ? ` · ${n.machine}` : ""}
               {n.held ? " · on hold" : n.ready ? "" : n.why ? ` · ${n.why}` : ""}
             </div>
-            {all && n.backlog && !n.resuming && (
+            {open && n.backlog && !n.resuming && (
               <div className="row-buttons small">
                 <button className="quietbtn" disabled={busy} onClick={() => void update(n.id, { held: !n.held })}>{n.held ? "Let go" : "Hold"}</button>
                 <button className="quietbtn" disabled={busy} onClick={() => void update(n.id, { top: true })}>Top of {n.app}</button>
@@ -79,7 +83,7 @@ export function LinedUp({ onOpenJob, onError }: { onOpenJob: (id: string) => voi
           </li>
         ))}
       </ol>
-      {all && (
+      {open && (
         <>
           <div className="muted small">Left per app</div>
           <ul className="plain small">

@@ -15,3 +15,14 @@ export function itemPrompt(node: Pick<TreeNode, "title" | "notes">): string {
   const notes = node.notes?.trim();
   return notes ? `${node.title}\n\n${notes}` : node.title;
 }
+
+/**
+ * Whether an item's page opens its new-job form by itself: once per visit to the
+ * item, once it's known whether something is working on it. `seen` is the item
+ * the form last decided for, so closing the form keeps it closed. Returns the
+ * new `seen`, and whether to open the form now.
+ */
+export function autoOpen(seen: string | null, nodeId: string, unattended: boolean, known: boolean): { seen: string | null; open: boolean } {
+  if (!known || seen === nodeId) return { seen, open: false };
+  return { seen: nodeId, open: unattended };
+}

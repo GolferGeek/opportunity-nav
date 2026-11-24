@@ -4,6 +4,7 @@ import { Nav } from "./Nav.tsx";
 import { Happening, type Group } from "./Happening.tsx";
 import { Dashboard, type Dash } from "./Dashboard.tsx";
 import { Detail } from "./Detail.tsx";
+import { nearestProject } from "./newJob.ts";
 import { JobPanel } from "./Job.tsx";
 import { Settings } from "./Settings.tsx";
 import { Ask } from "./Ask.tsx";
@@ -88,7 +89,7 @@ function Home() {
           <button className={claude ? "on-toggle" : ""} onClick={() => setClaude(!claude)} title="Talk to Claude (⌘J)">Claude</button>
           <button className="quietbtn" onClick={() => setSettings(true)}>Settings</button>
         </div>
-        {node && <Detail node={node} path={path} unattended={isUnattended(node, attended)} attendedKnown={attended != null} onChanged={refresh} onOpenJob={setJob} onError={setToast} onSelect={select} />}
+        {node && <Detail node={node} project={nearestProject(byId, node)} path={path} unattended={isUnattended(node, attended)} attendedKnown={attended != null} onChanged={refresh} onOpenJob={setJob} onError={setToast} onSelect={select} />}
         <div className="panes">
           <Happening groups={happening.data} onChanged={refresh} onOpenJob={setJob} onOpenExternal={setExternal} onSelect={select} onError={setToast} />
           <Dashboard dash={dash.data} onChanged={refresh} onSelect={select} onOpenSub={setSub} onOpenJob={setJob} onError={setToast} />
