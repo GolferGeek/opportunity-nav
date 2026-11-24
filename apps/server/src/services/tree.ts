@@ -66,6 +66,10 @@ export const TreeNodePatch = z.object({
  * A repo as the server stores and compares it (repoIdentity): "git@github.com:A/B.git" and
  * "https://github.com/A/B" → "github.com/a/b" (GitHub ignores case); any other host keeps the
  * path's case, so two repos there that differ only in case stay two repos.
+ * Before 2026-11-23 every stored repo was lower-cased. On GitHub that's still its identity. A project
+ * on another host whose path has capitals was stored without them and can't be recovered: it now
+ * matches no checkout until its repo is set again. That fails closed on purpose: matching it loosely
+ * would let a case-only twin repo match too.
  */
 export function normaliseRemote(remote: string): string {
   const known = repoIdentity(remote, { serverForm: true });

@@ -133,6 +133,8 @@ A job can run on your own machine (the default) or in Cloudroom's cloud sandbox.
 
 A Claude job can also run in Claude's own cloud, through a Claude Code routine on your Max plan. A machine offers it once you've saved the routine's token on it, and only for the repos its routine file lists: see [docs/claude-cloud-setup.md](docs/claude-cloud-setup.md).
 
+Repos compare exactly, case and all, except on GitHub (which ignores case). Before 2026-11-23 a project's repo was stored lower-cased: if one on another host has capitals in its path, set its repo again in the project's settings, or no machine will take its jobs.
+
 - It starts from the project's default branch on origin (or the branch the job names), so unpushed local changes aren't there.
 - The cloud session pushes to a `claude/opnav-…` branch. The machine brings that in and lands it like any job (with push, on that same branch).
 - There's no status API: a run that never pushes shows up only as a timeout (45 minutes, then one more try).
