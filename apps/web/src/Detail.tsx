@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, providerName, runsOnText, type Need, type Priority, type TreeNode } from "./api.ts";
+import { ANY_MACHINE, keepWhere, whereOptions, whereToJob, type MachineLite, type Where } from "./where.ts";
 
 export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: {
   node: TreeNode;
@@ -108,41 +109,41 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
   const [provider, setProvider] = useState(node.defaultProvider ?? "claude");
   const [model, setModel] = useState(node.defaultModel ?? "");
   const [location, setLocation] = useState(node.defaultLocation ?? "");
-  const [runner, setRunner] = useState<"direct" | "cloudroom" | "claude-cloud">("direct");
+  // One "Where it runs" choice: any machine (the default), one machine, or a cloud.
+  const [where, setWhere] = useState<Where>(ANY_MACHINE);
   const [needs, setNeeds] = useState<Need[]>(node.defaultNeeds ?? []);
   const localModels = LOCAL_MODEL_PROVIDERS.includes(provider);
   useEffect(() => { if (!localModels && location === "local") setLocation(""); }, [localModels, location]);
   const [busy, setBusy] = useState(false);
-  // Machines that can hand jobs to Cloudroom, and which agents they can run there.
-  const [cloudroom, setCloudroom] = useState<string[]>([]);
-  // Whether an online machine has its Claude Code routine set up for this repo, for Claude in Claude's cloud.
-  const [claudeCloud, setClaudeCloud] = useState(false);
+  // The machines, and the repo of the node's project (what Claude's cloud routines are matched on).
+  const [machines, setMachines] = useState<MachineLite[]>([]);
+  const [repo, setRepo] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    setClaudeCloud(false);
+    setRepo(null);
     // The job runs in the node's project (an item's nearest project above it), as the server resolves it.
-    void Promise.all([api<any[]>("GET", "/api/machines"), api<TreeNode[]>("GET", "/api/tree")]).then(([ms, tree]) => {
+    void Promise.all([api<MachineLite[]>("GET", "/api/machines"), api<TreeNode[]>("GET", "/api/tree")]).then(([ms, tree]) => {
       if (!live) return;
       const byId = new Map(tree.map((n) => [n.id, n]));
       let project: TreeNode | undefined = byId.get(node.id) ?? node;
       while (project && project.kind !== "project") project = project.parentId ? byId.get(project.parentId) : undefined;
-      const repo = project?.repoRemote ?? null;
-      setCloudroom([...new Set(ms.filter((m) => m.online && m.cloudroom).flatMap((m) => m.cloudroom.providers as string[]))]);
-      // Only a routine that covers the project's repo can run it (the server matches the same way).
-      setClaudeCloud(ms.some((m) => m.online && m.claudeCloud?.ready && repo !== null && (m.claudeCloud.repos ?? []).includes(repo)));
+      setMachines(ms);
+      setRepo(project?.repoRemote ?? null);
     }).catch(() => {});
     return () => { live = false; };
   }, [node.id, node.repoRemote]);
-  useEffect(() => {
-    if (runner === "cloudroom" && !cloudroom.includes(provider) || runner === "claude-cloud" && (provider !== "claude" || !claudeCloud)) setRunner("direct");
-  }, [provider, cloudroom, claudeCloud, runner]);
+  const whereOpts = useMemo(() => whereOptions(machines, provider, repo, providerName), [machines, provider, repo]);
+  // A choice that stops fitting (another agent, a routine that no longer covers the repo) goes back to any machine.
+  const chosen = keepWhere(where, whereOpts);
+  useEffect(() => { if (chosen !== where) setWhere(chosen); }, [chosen, where]);
+  const { runner, machineId } = whereToJob(chosen);
   const inCloud = runner !== "direct";
   const go = async () => {
     if (!prompt.trim()) return;
     setBusy(true);
     try {
       const j = await api("POST", "/api/jobs", { nodeId: node.id, prompt, provider, model: model || undefined,
-        location: inCloud ? "cloud" : location || undefined, runner, needs });
+        location: inCloud ? "cloud" : location || undefined, runner, machineId, needs });
       onStarted(j.id);
     } catch (e) {
       onError((e as Error).message);
@@ -159,21 +160,18 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
           {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model (default)" aria-label="Model" />
-        {!inCloud && (
+        {/* Only Ollama and MLX can run their model on the machine itself; every other agent's model is in the cloud, so there's nothing to pick. */}
+        {localModels && !inCloud && (
           <select value={location} onChange={(e) => setLocation(e.target.value)} aria-label="Model location">
-            <option value="">Default</option>
+            <option value="">Model: default</option>
+            <option value="local">Local model</option>
             <option value="cloud">Cloud model</option>
-            {localModels && <option value="local">Local model</option>}
           </select>
         )}
-        {(cloudroom.length > 0 || claudeCloud) && (
-          <select value={runner} onChange={(e) => setRunner(e.target.value as typeof runner)} aria-label="Where it runs"
-            title="A cloud runs it in its own sandbox, starting from the repo on GitHub, and pushes the work to a branch.">
-            <option value="direct">On my machine</option>
-            {cloudroom.length > 0 && <option value="cloudroom" disabled={!cloudroom.includes(provider)}>In Cloudroom's cloud{cloudroom.includes(provider) ? "" : " (not for this agent)"}</option>}
-            {claudeCloud && <option value="claude-cloud" disabled={provider !== "claude"}>In Claude's cloud{provider === "claude" ? "" : " (Claude only)"}</option>}
-          </select>
-        )}
+        <select value={chosen} onChange={(e) => setWhere(e.target.value)} aria-label="Where it runs"
+          title="Any machine: the first free one that can run it. A cloud runs it in its own sandbox, starting from the repo on GitHub, and pushes the work to a branch.">
+          {whereOpts.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
+        </select>
         {!inCloud && <span className="needs-pick muted" title="Only a machine that has these takes the job.">Needs <NeedsPicker value={needs} onChange={setNeeds} /></span>}
         <span className="spacer" />
         <button type="submit" className="primary" disabled={busy || !prompt.trim()}>Start</button>
