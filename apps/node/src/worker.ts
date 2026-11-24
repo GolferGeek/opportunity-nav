@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { JobEvent, NeedsInput } from "@opnav/shared";
 import type { Turn } from "@opnav/shared";
 import { claudeActivity, codexActivity, shortText, toolLine } from "./activity.ts";
-import { executable, object, parse, string } from "./system.ts";
+import { executable, helperConfigDir, object, parse, string } from "./system.ts";
 import type { System } from "./system.ts";
 import { installPackages } from "./packages.ts";
 import { openWorktree, WorktreeError, worktreeEnv } from "./worktrees.ts";
@@ -34,7 +34,11 @@ export const publishFreely: Publish = async () => ({ ok: true });
 
 const agentNames: Partial<Record<string, string>> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
 
-export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbox = false): string[] {
+/**
+ * workerArgs's hidden: directories a Claude worker in edit mode may not read, with its Read tool or,
+ * when sandboxed, from any command (the helper's own settings and the Claude routine's token live there).
+ */
+export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbox = false, hidden: string[] = []): string[] {
   const { job, providerSessionId } = turn;
   if (turn.kind === "continue" && (!providerSessionId || providerSessionId.startsWith("-") || !turn.answer)) {
     throw new Error("Continue turn needs a session and an answer");
@@ -44,9 +48,13 @@ export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbo
   if (job.provider === "claude") {
     const permissions = autonomy === "full" ? ["--dangerously-skip-permissions"] : [
       "--permission-mode", "acceptEdits",
-      ...(claudeSandbox ? ["--settings", JSON.stringify({ sandbox: {
-        enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
-      } })] : []),
+      ...(claudeSandbox || hidden.length ? ["--settings", JSON.stringify({
+        ...(hidden.length ? { permissions: { deny: hidden.flatMap(dir => [`Read(/${dir})`, `Read(/${dir}/**)`]) } } : {}),
+        ...(claudeSandbox ? { sandbox: {
+          enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
+          ...(hidden.length ? { filesystem: { denyRead: hidden } } : {}),
+        } } : {}),
+      })] : []),
     ];
     return ["-p", "--output-format", "stream-json", "--verbose", ...permissions, ...model,
       ...(job.effort ? ["--effort", job.effort] : []), ...(resume ? ["--resume", resume] : [])];
@@ -221,7 +229,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
     (sys.platform === "darwin" || sys.platform === "linux" &&
       (await Promise.all([executable(sys, ["bwrap"]), executable(sys, ["socat"])])).every(Boolean));
   if (turn.kind === "continue" && !turn.answer) throw new Error("Continue turn needs an answer");
-  const args = workerArgs(turn, autonomy, claudeSandbox);
+  const args = workerArgs(turn, autonomy, claudeSandbox, [helperConfigDir(sys)]);
   const input = turn.kind === "continue" ? turn.answer!.text : turn.job.prompt;
   // Headless agy ends the whole turn the moment an edit is refused, so tell it where it may edit.
   const where = turn.job.provider === "agy" && autonomy === "edit"

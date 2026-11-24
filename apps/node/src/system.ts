@@ -33,6 +33,14 @@ export function searchPath(path: string | undefined, home: string, platform: Nod
   return [...parts, ...extra.filter(dir => !parts.includes(dir))].join(delimiter);
 }
 
+/**
+ * The helper's own settings directory (~/.config/opportunity-nav): its node token's env file and the
+ * Claude routine's token file. Claude workers in edit mode are told not to read it (workerArgs).
+ */
+export function helperConfigDir(sys: Pick<System, "home">): string {
+  return join(sys.home, ".config", "opportunity-nav");
+}
+
 export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const { OPNAV_NODE_TOKEN: _token, ...rest } = env;
   return rest;

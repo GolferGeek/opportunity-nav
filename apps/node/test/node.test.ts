@@ -144,8 +144,11 @@ test("a running handoff is updated by its START line and log, not the time it wa
 });
 
 test("normalizes remotes and only treats a final valid fence as a question", () => {
-  assert.equal(normalizeRemote("git@GitHub.COM:GolferGeek/repo.git"), "github.com/GolferGeek/repo");
-  assert.equal(normalizeRemote("https://user:placeholder@github.com/GolferGeek/repo.git/?x=1"), "github.com/GolferGeek/repo");
+  // GitHub ignores case, so its identity is lower case; other hosts keep the path's case.
+  assert.equal(normalizeRemote("git@GitHub.COM:GolferGeek/repo.git"), "github.com/golfergeek/repo");
+  assert.equal(normalizeRemote("https://user:placeholder@github.com/GolferGeek/repo.git/"), "github.com/golfergeek/repo");
+  assert.equal(normalizeRemote("https://user:placeholder@git.example.com/Team/Repo.git"), "git.example.com/Team/Repo");
+  assert.equal(normalizeRemote("https://github.com/GolferGeek/repo.git/?x=1"), undefined);
   assert.equal(normalizeRemote("/tmp/repo.git"), undefined);
   assert.equal(terminal('```opnav-needs-input\n{"question":""}\n```').type, "result");
   assert.equal(terminal('```opnav-needs-input\n{"question":"What?"}\n```\nGoodbye').type, "result");

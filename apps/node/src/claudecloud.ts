@@ -10,6 +10,7 @@ import type { System } from "./system.ts";
 import { land, needsInputInstruction, publishFreely, terminal } from "./worker.ts";
 import type { EventContent, Publish, Terminal } from "./worker.ts";
 import { GitError, openWorktree, repoKey, WorktreeError, worktreeEnv } from "./worktrees.ts";
+import { sameRepo } from "@opnav/shared";
 
 /**
  * Claude's cloud, through a Claude Code routine ("scheduled task") with an API trigger.
@@ -21,18 +22,28 @@ import { GitError, openWorktree, repoKey, WorktreeError, worktreeEnv } from "./w
  */
 
 const exec = promisify(execFile);
-/** Where the person saves the routine's fire URL, token and repos, readable only by them. */
+/**
+ * Where the person saves the routine's fire URL, token and repos, readable only by them (mode 600),
+ * in the helper's settings directory. Only the helper reads it, and only the helper's own process:
+ * the token never goes into a job's environment, worktree, prompt or log. Claude workers in edit mode
+ * are refused reads of that directory (workerArgs). Codex and Antigravity workers, and any job in full
+ * autonomy, run as the same OS account with no such restriction and could read it.
+ */
 export const ROUTINE_FILE = ".config/opportunity-nav/claude-routine.json";
 const fireUrl = /^https:\/\/api\.anthropic\.com\/v1\/claude_code\/routines\/trig_[\w-]+\/fire$/;
 const MAX_TEXT = 65_536;
-const marker = /^opnav-(result|failed)\b/;
 
 export interface RoutineConfig { url: string; token: string; repos: string[] }
 export type ClaudeCloudStatus = { ready: true; config: RoutineConfig } | { ready: false; reason: string };
 
 /** A repo as the routine file may name it: github.com/owner/repo, owner/repo (GitHub), a URL, or a local path. */
-function routineRepo(value: string) {
+export function routineRepo(value: string) {
   return repoKey(/^[\w-]+\/[\w.-]+$/.test(value.trim()) ? `github.com/${value.trim()}` : value);
+}
+
+/** The repos a routine covers, as repo identities (what the heartbeat and claim advertise). */
+export function routineRepos(config: Pick<RoutineConfig, "repos">): string[] {
+  return [...new Set(config.repos.map(routineRepo).filter((r): r is string => !!r))];
 }
 
 /** Read the routine file. Missing or unsafe means "not set up", and the machine takes no Claude cloud jobs. */
@@ -54,7 +65,7 @@ export async function claudeCloudStatus(sys: System): Promise<ClaudeCloudStatus>
   const repos = Array.isArray(raw.repos) ? raw.repos.map(string).filter((r): r is string => !!r) : [];
   if (!url || !fireUrl.test(url)) return { ready: false, reason: "not set up: the routine's fire URL is missing or isn't a Claude routine URL" };
   if (!token || /\s/.test(token)) return { ready: false, reason: "not set up: the routine's token is missing" };
-  if (!repos.length) return { ready: false, reason: "not set up: the file names no repos" };
+  if (!routineRepos({ repos }).length) return { ready: false, reason: "not set up: the file names no repos" };
   return { ready: true, config: { url, token, repos } };
 }
 
@@ -79,23 +90,27 @@ export function resultBranch(turn: Turn) {
 /** The text the routine is fired with. The routine's saved prompt says to follow it. */
 export function fireText(turn: Turn, branch: string, start: string, base: string | undefined): string {
   const { job } = turn;
+  const repo = job.remote!;
   const task = turn.kind === "continue"
     ? `${job.prompt}\n\nThis continues an earlier run of this job. Its work so far is at the start commit.\nYou asked the person a question; their answer:\n${turn.answer?.text ?? ""}`
     : job.prompt;
   return [
     `Opportunity Nav job ${job.id.slice(0, 8)}: ${job.title.split("\n")[0]!.trim()}`,
+    `Repository: ${repo}`,
     `Start commit: ${start}${base ? ` (on branch ${base} on origin)` : ""}`,
     `Result branch: ${branch}`,
     "",
     "Steps:",
+    `0. Check this session's checkout is ${repo} before anything else: git remote get-url origin and git remote get-url --push origin must both be that repo (the same host and owner/repo path; ${repo.startsWith("github.com/") ? "GitHub ignores case" : "case counts"}; an address through Claude's local Git proxy counts when its path ends in that owner/repo). If either isn't, stop: change nothing, commit nothing, push nothing, and say why in this session.`,
     `1. git fetch origin ${base ?? start} && git checkout -b ${branch} ${start}`,
     "2. Do the task below on that branch. Commit your work there.",
-    "3. When you're done, add one last commit, empty is fine:",
-    `   git commit --allow-empty -m "opnav-result" -m "<your final answer to the person>"`,
-    `4. git push origin ${branch}`,
-    "Push only that branch. Don't push anywhere else, and don't open a pull request.",
-    "Push when you're done. Opportunity Nav takes the branch only once its last commit says opnav-result.",
-    `If you can't do the task, still push ${branch} with an empty last commit whose message is "opnav-failed" and then why.`,
+    "3. When you're done, add one last commit, empty is fine. Its first line is exactly opnav-result, then the repo line, then your answer:",
+    `   git commit --allow-empty -m "opnav-result" -m "opnav-repo: ${repo}" -m "<your final answer to the person>"`,
+    `4. Check origin's push address again (step 0), then: git push origin ${branch}`,
+    "Push only that branch, only to origin, and only after step 0 passed. Don't push anywhere else, and don't open a pull request.",
+    "Push when you're done. Opportunity Nav takes the branch only once its last commit's first line is exactly opnav-result.",
+    `If you can't do the task (but step 0 passed), still push ${branch} with an empty last commit:`,
+    `   git commit --allow-empty -m "opnav-failed" -m "opnav-repo: ${repo}" -m "<why>"`,
     "",
     "Task:",
     task,
@@ -147,12 +162,26 @@ async function readGit(sys: System, cwd: string, ...args: string[]) {
   return (await run).stdout;
 }
 
-/** A pushed branch's finishing commit: the answer, and which commit holds the work. */
-async function finish(sys: System, cwd: string, tip: string) {
+/**
+ * A pushed branch's finishing commit. Finished only when the tip's first line is exactly opnav-result
+ * or opnav-failed ("opnav-result: draft" is a progress commit, not the end). Its body must start with
+ * the repo line naming the job's repo, and a result must hold an answer: both are checked here, before
+ * anything moves the job's branch. Returns undefined while unfinished, or which commit holds the work.
+ */
+export async function finish(sys: System, cwd: string, tip: string, repo: string):
+  Promise<undefined | { refused: string } | { failed: boolean; answer: string; target: string }> {
   const message = await readGit(sys, cwd, "log", "-1", "--format=%B", tip);
-  const kind = marker.exec(message)?.[1];
+  const [subject = "", ...rest] = message.replace(/\r\n/g, "\n").split("\n");
+  const kind = /^opnav-(result|failed)[ \t]*$/.exec(subject)?.[1];
   if (!kind) return undefined;
-  const answer = message.replace(marker, "").trim();
+  const body = rest.join("\n").trim();
+  const said = /^opnav-repo:[ \t]*(\S+)[ \t]*(?:\n|$)/.exec(body);
+  if (!said) return { refused: "Claude's cloud session's last commit doesn't say which repo it worked in, so its work wasn't taken." };
+  if (!sameRepo(said[1]!, repo, { serverForm: true })) {
+    return { refused: "Claude's cloud session says it worked in another repo, so its work wasn't taken." };
+  }
+  const answer = body.slice(said[0].length).trim();
+  if (kind === "result" && !answer) return { refused: "Claude's cloud session finished without an answer." };
   // An empty marker commit isn't work: land its parent, so it never reaches the person's branch.
   const [tree, parentTree] = await Promise.all([readGit(sys, cwd, "rev-parse", `${tip}^{tree}`),
     readGit(sys, cwd, "rev-parse", `${tip}^^{tree}`).catch(() => "")]);
@@ -180,7 +209,7 @@ export async function runClaudeCloud(sys: System, config: RoutineConfig, turn: T
   if (job.provider !== "claude") return failed("Claude's cloud runs only Claude.");
   if (!job.remote) return failed("Claude's cloud needs the server to say which repo the job is in. Update the server.");
   const repo = repoKey(job.remote);
-  if (!config.repos.some(r => routineRepo(r) === repo)) {
+  if (!repo || !routineRepos(config).includes(repo)) {
     return failed(`The Claude routine isn't set up for ${job.remote}. Add the repo to the routine and to its file (docs/claude-cloud-setup.md).`);
   }
   const worktree = await openWorktree(sys, job, { fromOrigin: true }).catch(error => {
@@ -233,17 +262,17 @@ async function follow(sys: System, config: RoutineConfig, turn: Turn, signal: Ab
     if (!sha || sha === seen) return undefined;
     seen = sha;
     const tip = await worktree.fetchBranch(branch, signal);
-    const done = await finish(sys, worktree.path, tip);
+    const done = await finish(sys, worktree.path, tip, turn.job.remote!);
     if (!done) {
       if (!unfinished) emit({ type: "progress", text: `Claude's cloud session pushed to ${branch}. Waiting for its last commit.` });
       unfinished = true;
       return undefined;
     }
+    if ("refused" in done) return { type: "error", code: "provider_error", message: done.refused, retryable: false };
     const count = await worktree.fastForward(done.target);
     emit({ type: "progress", text: count ? `Brought in ${count} commit${count === 1 ? "" : "s"} from ${branch}.` : `${branch} has no new commits.` });
     if (done.failed) return { type: "error", code: "provider_error", retryable: false,
       message: `Claude's cloud session couldn't do it${done.answer ? `: ${shortText(done.answer)}` : "."}` };
-    if (!done.answer) return { type: "error", code: "provider_error", message: "Claude's cloud session finished without an answer.", retryable: false };
     return terminal(done.answer);
   }
 

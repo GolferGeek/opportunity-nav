@@ -3,7 +3,7 @@ import { lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/pr
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { JobSpec } from "@opnav/shared";
-import { normalizeRemote } from "./capabilities.ts";
+import { repoIdentity } from "@opnav/shared";
 import { childEnv } from "./system.ts";
 import type { System } from "./system.ts";
 
@@ -90,6 +90,30 @@ async function network(sys: System, cwd: string, signal: AbortSignal | undefined
   }
   return gitWith(sys, cwd, { signal, env }, "-c", "credential.interactive=false", ...args);
 }
+
+/**
+ * A fetch, ls-remote or push to the job's repo at its checked address, in the Git context that does
+ * it (cwd: the checkout, or the job's worktree, whose own settings may differ). Right before it runs,
+ * the address is checked again there: still the job's repo, and no insteadOf / pushInsteadOf rule
+ * or remote named after it in that context. Then Git runs with the address pinned to itself (a
+ * rewrite of the whole address to itself outranks any shorter rule, and pushInsteadOf outranks
+ * insteadOf on a push), so a rule added after the check can't send it elsewhere either.
+ */
+async function toRepo(sys: System, cwd: string, signal: AbortSignal | undefined, dest: Destination, ...args: string[]) {
+  const problem = await addressProblem(sys, cwd, dest.repo, dest.url, dest.push ? dest.url : undefined)
+    .catch(() => "could not read origin's address");
+  if (problem) throw new DestinationError(problem);
+  // Git reads "-c key=value" up to the first "=": an address with one (or a line break) can't be pinned.
+  if (/[=\r\n]/.test(dest.url)) throw new DestinationError("origin's address can't be pinned");
+  const pin = ["-c", `url.${dest.url}.insteadOf=${dest.url}`, ...(dest.push ? ["-c", `url.${dest.url}.pushInsteadOf=${dest.url}`] : [])];
+  return network(sys, cwd, signal, ...pin, ...args);
+}
+
+/** Where a fetch or push goes: the job's repo, at the address checked for it. */
+interface Destination { repo: string; url: string; push?: boolean }
+
+/** The checked address stopped being safe to use in this Git context (a fixed phrase, no address). */
+export class DestinationError extends Error {}
 
 function directory(sys: System) {
   const xdg = sys.env.XDG_DATA_HOME;
@@ -220,8 +244,9 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
     if (fromRemote && job.branch !== undefined && !branchName(job.branch)) {
       throw new WorktreeError("The job names a branch to land on that isn't a branch name it can use.");
     }
-    const base = fromRemote ? job.branch ?? await originDefault(sys, checkout, checked!.fetchUrl) : undefined;
-    const start = base && await fetchBranch(sys, checkout, checked!.fetchUrl, base)
+    const from = fromRemote ? { repo: job.remote!, url: checked!.fetchUrl } : undefined;
+    const base = from ? job.branch ?? await originDefault(sys, checkout, from) : undefined;
+    const start = base && await fetchBranch(sys, checkout, from!, base)
       .then(() => git(sys, checkout, "rev-parse", "--verify", `refs/remotes/origin/${base}^{commit}`))
       .then(sha => sha.trim(), () => undefined);
     const branchExists = await git(sys, checkout, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`)
@@ -245,7 +270,11 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
     await git(sys, checkout, "worktree", "lock", path);
   }
   let landing = saved;
-  const fetchUrl = checked?.fetchUrl ?? saved.fetchUrl;
+  // The address checked when the job started stays the one it uses: a later turn doesn't follow
+  // origin to a new address, even one that also passes the check.
+  const repo = saved.repo ?? job.remote;
+  const fetchUrl = saved.fetchUrl ?? checked?.fetchUrl;
+  const dest = repo && fetchUrl ? { repo, url: fetchUrl } : undefined;
   const remember = async (landed: { tip: string; commit: string }) => {
     landing = { ...landing, landed };
     await writeFile(metadata, JSON.stringify(landing), { mode: 0o600 });
@@ -255,9 +284,9 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
     /** The branch it lands on and the commit it started from on origin, when it started there. */
     landing: landing.start ? { base: landingBranch(landing), start: landing.start } : undefined,
     /** A branch's commit on origin (at the checked address), or undefined when origin hasn't got it. */
-    remoteBranch: (name: string, signal?: AbortSignal) => remoteBranch(sys, path, fetchUrl, name, signal),
+    remoteBranch: (name: string, signal?: AbortSignal) => remoteBranch(sys, path, dest, name, signal),
     /** Fetch a branch from origin (at the checked address) and return its tip. */
-    fetchBranch: (name: string, signal?: AbortSignal) => oneAtATime(checkout, () => fetchOther(sys, path, fetchUrl, name, signal)),
+    fetchBranch: (name: string, signal?: AbortSignal) => oneAtATime(checkout, () => fetchOther(sys, path, dest, name, signal)),
     /** Fast-forward the job's branch to a commit. Returns how many commits it gained. */
     fastForward: (target: string) => oneAtATime(checkout, () => fastForward(sys, path, branch, target)),
     async release() {
@@ -267,18 +296,18 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
 
 export class GitError extends Error {}
 
-async function remoteBranch(sys: System, path: string, url: string | undefined, name: string, signal?: AbortSignal) {
-  if (!url) throw new GitError("the job has no checked address for its repo");
-  const out = await network(sys, path, signal, "ls-remote", "--heads", "--", url, `refs/heads/${name}`)
+async function remoteBranch(sys: System, path: string, dest: Destination | undefined, name: string, signal?: AbortSignal) {
+  if (!dest) throw new GitError("the job has no checked address for its repo");
+  const out = await toRepo(sys, path, signal, dest, "ls-remote", "--heads", "--", dest.url, `refs/heads/${name}`)
     .catch(error => { throw new GitError(gitReason(error)); });
   const sha = out.split(/\s+/)[0];
   return sha && /^[a-f0-9]{40,64}$/.test(sha) ? sha : undefined;
 }
 
-async function fetchOther(sys: System, path: string, url: string | undefined, name: string, signal?: AbortSignal) {
-  if (!url) throw new GitError("the job has no checked address for its repo");
+async function fetchOther(sys: System, path: string, dest: Destination | undefined, name: string, signal?: AbortSignal) {
+  if (!dest) throw new GitError("the job has no checked address for its repo");
   const ref = `refs/opnav-cloud/${name}`;
-  await network(sys, path, signal, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", url, `+refs/heads/${name}:${ref}`)
+  await toRepo(sys, path, signal, dest, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", dest.url, `+refs/heads/${name}:${ref}`)
     .catch(error => { throw new GitError(`could not fetch ${name} (${gitReason(error)})`); });
   return (await git(sys, path, "rev-parse", "--verify", `${ref}^{commit}`)).trim();
 }
@@ -341,8 +370,8 @@ function branchName(name: string): boolean {
  * The project's default branch: the one origin's HEAD points to (main or master), as origin says
  * at the checked address, or else as this checkout last heard it. Undefined when neither knows.
  */
-export async function originDefault(sys: System, cwd: string, url: string | undefined, signal?: AbortSignal): Promise<string | undefined> {
-  const asked = url ? await network(sys, cwd, signal, "ls-remote", "--symref", "--", url, "HEAD").catch(() => "") : "";
+export async function originDefault(sys: System, cwd: string, dest: Destination | undefined, signal?: AbortSignal): Promise<string | undefined> {
+  const asked = dest ? await toRepo(sys, cwd, signal, dest, "ls-remote", "--symref", "--", dest.url, "HEAD").catch(() => "") : "";
   const said = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(asked)?.[1];
   const known = said ?? (await git(sys, cwd, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").catch(() => ""))
     .trim().replace(/^refs\/remotes\/origin\//, "");
@@ -354,9 +383,9 @@ async function onBranch(sys: System, path: string, branch: string) {
 }
 
 /** Fetch a branch from origin's checked address, never from whatever "origin" names by then. */
-function fetchBranch(sys: System, cwd: string, url: string, base: string, signal?: AbortSignal) {
-  return network(sys, cwd, signal, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--",
-    url, `+refs/heads/${base}:refs/remotes/origin/${base}`);
+function fetchBranch(sys: System, cwd: string, dest: Destination, base: string, signal?: AbortSignal) {
+  return toRepo(sys, cwd, signal, dest, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--",
+    dest.url, `+refs/heads/${base}:refs/remotes/origin/${base}`);
 }
 
 /** origin's addresses, fetch or push, with insteadOf and pushInsteadOf applied. */
@@ -366,15 +395,13 @@ async function originUrls(sys: System, cwd: string, push = false) {
 }
 
 /**
- * A repo address as something to compare: host and path for a network address (SSH and HTTPS
- * alike, case and ".git" aside), or the path of a local repo. A relative path never matches.
- * The server's own form (github.com/owner/repo) counts as a network address only when expected.
+ * A repo address as something to compare, by the one rule the server uses too (repoIdentity):
+ * host and path for a network address (SSH and HTTPS alike, ".git" aside), or the path of a local
+ * repo. The path's case counts, except on hosts known to ignore it (GitHub). A relative path never
+ * matches. The server's own form (github.com/owner/repo) counts as a network address only when expected.
  */
 export function repoKey(remote: string, expected = true): string | undefined {
-  const value = remote.trim();
-  const key = isAbsolute(value) ? `path:${value}` : normalizeRemote(value) ??
-    (expected && /^[\w.-]+(?::\d+)?\/[^\s?#]+$/.test(value) ? value : undefined);
-  return key?.replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+  return repoIdentity(remote, { serverForm: expected });
 }
 
 function isRepo(url: string, repo: string) {
@@ -431,6 +458,7 @@ async function checkOrigin(sys: System, cwd: string, repo: string, push: boolean
  * hold a credential (in a URL, or from a credential helper) that no pattern would catch.
  */
 export function gitReason(error: unknown): string {
+  if (error instanceof DestinationError) return error.message;
   const e = error as { stderr?: unknown; killed?: boolean; signal?: unknown; name?: unknown; code?: unknown };
   if (e.name === "AbortError" || e.code === "ABORT_ERR") return "the job was cancelled";
   if (e.killed || e.signal) return "Git took too long, perhaps waiting for a sign-in";
@@ -492,7 +520,8 @@ export async function pushWork(sys: System, path: string,
 
   // The safety net: work lands on the project's default branch, or on a branch the job named on
   // purpose. Never on some other branch (an old PR branch a side worktree happened to be on).
-  const main = await originDefault(sys, path, fetchUrl, signal);
+  const from: Destination = { repo: repo!, url: fetchUrl! };
+  const main = await originDefault(sys, path, from, signal);
   if (signal?.aborted) return cancelled;
   if (!main) return `Not pushed: could not tell which branch is origin's default, so it can't check that ${base} is the right branch to land on. ${kept}`;
   if (base !== main && !record.asked) return `Not pushed: ${base} isn't ${main}, the project's default branch, and the job didn't ask for it. ${kept}`;
@@ -502,7 +531,7 @@ export async function pushWork(sys: System, path: string,
   let remote: string | undefined;
   let unreachable: string | undefined;
   try {
-    await fetchBranch(sys, path, fetchUrl!, base, signal);
+    await fetchBranch(sys, path, from, base, signal);
     remote = await resolve(`refs/remotes/origin/${base}`).catch(error => {
       unreachable = `Could not read ${base} from origin (${gitReason(error)}).`;
       return undefined;
@@ -517,7 +546,7 @@ export async function pushWork(sys: System, path: string,
   if (remote && landed && landed.tip === tip && await ancestor(landed.commit, remote)) return onOrigin;
   // A branch the job named that's already merged into the default one is finished (an old PR's).
   if (remote && base !== main) {
-    const merged = await fetchBranch(sys, path, fetchUrl!, main, signal)
+    const merged = await fetchBranch(sys, path, from, main, signal)
       .then(() => resolve(`refs/remotes/origin/${main}`))
       .then(head => ancestor(remote!, head), () => undefined);
     if (signal?.aborted) return cancelled;
@@ -537,8 +566,8 @@ export async function pushWork(sys: System, path: string,
 
   // Only the job's commit, to one branch: no tags (whatever push.followTags says) and nothing in
   // a submodule's repo (whatever push.recurseSubmodules or submodule.recurse say).
-  const push = (commit: string, target: string) => network(sys, path, signal, "push", "--quiet", "--no-follow-tags",
-    "--recurse-submodules=no", "--", pushUrl!, `${commit}:refs/heads/${target}`);
+  const push = (commit: string, target: string) => toRepo(sys, path, signal, { repo: repo!, url: pushUrl!, push: true },
+    "push", "--quiet", "--no-follow-tags", "--recurse-submodules=no", "--", pushUrl!, `${commit}:refs/heads/${target}`);
   // The fallback is always the job's own branch as it is on this machine.
   const toBranch = async (why: string) => {
     if (signal?.aborted) return `${why} ${cancelled}`;

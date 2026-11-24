@@ -659,6 +659,30 @@ test("a job doesn't run in a checkout whose origin isn't the project's repo", as
   }
 });
 
+test("a job doesn't run when origin differs from the project's repo only in case, on a host where case counts", async t => {
+  for (const [origin, remote] of [
+    ["https://git.example.com/Team/Repo.git", "git.example.com/team/repo"],
+    ["git@gitlab.com:Team/Repo.git", "gitlab.com/Team/repo"],
+  ]) {
+    const { checkout, spec, run } = await pushFixture(t);
+    git(checkout, "remote", "set-url", "origin", origin!);
+    spec.remote = remote!;
+    const { outcome, progress } = await run();
+    assert.deepEqual(outcome, { type: "error", code: "other", retryable: false,
+      message: "This checkout can't run the job: origin isn't the project's repo." });
+    assert.deepEqual(progress, []);
+  }
+  // A local repo's path keeps its case too, even on a disk that ignores case.
+  const { origin, checkout, spec, run } = await pushFixture(t);
+  spec.remote = join(origin, "..", "ORIGIN.git");
+  const before = git(origin, "rev-parse", "main");
+  const { outcome } = await run();
+  assert.deepEqual(outcome, { type: "error", code: "other", retryable: false,
+    message: "This checkout can't run the job: origin isn't the project's repo." });
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(checkout, "worktree", "list").split("\n").length, 1, "no worktree was made");
+});
+
 test("a job doesn't run when a Git setting rewrites origin's address to another repo", async t => {
   for (const setting of ["insteadOf", "pushInsteadOf"]) {
     const { home, origin, checkout, spec, run } = await pushFixture(t);
@@ -751,8 +775,12 @@ test("a job that pushes publishes only its branch: no tags, whatever push.follow
 });
 
 test("a job that pushes never pushes a submodule's commits, whatever push.recurseSubmodules says", async t => {
+  // The fake agent stops at the first Git error (set -e), with its own identity in the submodule, so
+  // the job really ends with a changed gitlink and the test checks that it isn't pushed into lib.git.
   const { home, origin, checkout, run } = await pushFixture(t, () => [
+    "set -e",
     "git -c protocol.file.allow=always submodule update --quiet --init",
+    "git -C lib config user.name 'Test User' && git -C lib config user.email test@example.com",
     "git -C lib checkout --quiet -B main",
     "echo change > lib/change.txt && git -C lib add change.txt && git -C lib commit --quiet -m 'Submodule change'",
     "git add lib",
@@ -769,9 +797,14 @@ test("a job that pushes never pushes a submodule's commits, whatever push.recurs
   git(checkout, "config", "push.recurseSubmodules", "on-demand");
   git(checkout, "config", "protocol.file.allow", "always");
   const libBefore = git(lib, "rev-parse", "main");
-  const { progress } = await run();
+  const { outcome, progress } = await run();
+  assert.deepEqual(outcome, { type: "result", summary: "Done." });
   assert.match(progress.at(-1)!, /^Pushed to main as [a-f0-9]+\.$/);
   assert.equal(git(origin, "show", "--name-only", "--format=", "main"), "fix.txt\nlib");
+  // The pushed gitlink is the submodule commit the agent made, which never reached lib.git.
+  const gitlink = git(origin, "rev-parse", "main:lib");
+  assert.notEqual(gitlink, libBefore);
+  assert.throws(() => git(lib, "cat-file", "-e", `${gitlink}^{commit}`));
   assert.equal(git(lib, "rev-parse", "main"), libBefore, "the submodule's origin is untouched");
   assert.equal(git(lib, "for-each-ref", "--format=%(refname)").split("\n").length, 1);
 });
@@ -799,7 +832,7 @@ test("a checkout reports origin's address as Git will really use it", async t =>
   git(checkout, "remote", "add", "origin", "gh:Team/repo");
   git(checkout, "config", "url.git@github.com:.insteadOf", "gh:");
   const sys = system({ home, env: { PATH: process.env.PATH } });
-  assert.deepEqual((await checkouts(sys, [home], 1)).find(c => c.path === checkout)?.remote, "github.com/Team/repo");
+  assert.deepEqual((await checkouts(sys, [home], 1)).find(c => c.path === checkout)?.remote, "github.com/team/repo");
 });
 
 test("Git's error text never leaves the machine, only a fixed reason", () => {

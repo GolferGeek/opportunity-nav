@@ -6,7 +6,7 @@ import { ClaimResponse, DEFAULT_HEARTBEAT_INTERVAL_SEC, DEFAULT_USAGE_INTERVAL_S
 import type { ProviderCapability } from "@opnav/shared";
 import { nodeApi } from "./api.ts";
 import { capabilities, checkouts, machineTools } from "./capabilities.ts";
-import { claudeCloudDetector, runClaudeCloud } from "./claudecloud.ts";
+import { claudeCloudDetector, routineRepos, runClaudeCloud } from "./claudecloud.ts";
 import { cloudroomDetector, runCloudroom } from "./cloudroom.ts";
 import { handoffReport } from "./handoff.ts";
 import { runTurn } from "./lease.ts";
@@ -114,7 +114,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       const payload = NodeHeartbeat.parse({ hostname: hostname(), name: options.name, platform: sys.platform,
         arch: arch(), autonomy, helperVersion: await version, providers: detected, checkouts: discovered,
         cloudroom: cloudroom && { providers: cloudroom.providers }, tools,
-        claudeCloud: claudeCloud.ready ? { ready: true } : { ready: false, reason: claudeCloud.reason },
+        claudeCloud: claudeCloud.ready ? { ready: true, repos: routineRepos(claudeCloud.config) } : { ready: false, reason: claudeCloud.reason },
         handoff: handoff ? { dir: handoff } : undefined, activeJobIds: [...running.keys()], capacity, cloudCapacity });
       const answer = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
       time = answer;
@@ -150,7 +150,8 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       const cloudFree = cloudroomProviders.length || claudeCloud.ready ? Math.max(0, cloudCapacity - now.cloud) : 0;
       if (free + cloudFree <= 0) return interval;
       const { turns } = ClaimResponse.parse(await post(NODE.claim, {
-        providers: [...available.keys()], cloudroomProviders, claudeCloud: claudeCloud.ready, max: free, cloudMax: cloudFree,
+        providers: [...available.keys()], cloudroomProviders, claudeCloud: claudeCloud.ready,
+        ...(claudeCloud.ready ? { claudeCloudRepos: routineRepos(claudeCloud.config) } : {}), max: free, cloudMax: cloudFree,
       }));
       for (const turn of turns) {
         const inACloud = runsInCloud(turn.job.runner);

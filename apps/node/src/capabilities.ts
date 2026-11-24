@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { MachineTool } from "@opnav/shared";
+import { MachineTool, repoIdentity } from "@opnav/shared";
 import type { Checkout, ProviderCapability } from "@opnav/shared";
 import { command, executable, localPath } from "./system.ts";
 import type { System } from "./system.ts";
@@ -21,23 +21,10 @@ export async function capabilities(sys: System): Promise<ProviderCapability[]> {
   return providers.filter(value => value !== undefined);
 }
 
+/** origin's address as the repo identity the server compares (repoIdentity); undefined for a local path. */
 export function normalizeRemote(remote: string): string | undefined {
-  const scp = /^(?:[^@/:]+@)?([\w.-]+):([^/].*)$/.exec(remote);
-  if (scp && !/^[a-z]:/i.test(remote)) {
-    return remoteName(scp[1]!, scp[2]!);
-  }
-  try {
-    const url = new URL(remote);
-    if (!["ssh:", "git:", "http:", "https:"].includes(url.protocol)) return;
-    return remoteName(url.host, url.pathname);
-  } catch {
-    return undefined;
-  }
-}
-
-function remoteName(host: string, path: string): string | undefined {
-  const clean = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
-  if (clean && !/[?#\s]/.test(clean)) return `${host.toLowerCase()}/${clean}`;
+  const value = remote.trim();
+  return value.startsWith("/") || /^[a-z]:[\\/]/i.test(value) ? undefined : repoIdentity(value);
 }
 
 export async function checkouts(sys: System, roots: string[], maxDepth: number): Promise<Checkout[]> {

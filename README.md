@@ -131,7 +131,7 @@ A job can run on your own machine (the default) or in Cloudroom's cloud sandbox.
 
 ## Running Claude jobs in Claude's cloud
 
-A Claude job can also run in Claude's own cloud, through a Claude Code routine on your Max plan. A machine offers it once you've saved the routine's token on it: see [docs/claude-cloud-setup.md](docs/claude-cloud-setup.md).
+A Claude job can also run in Claude's own cloud, through a Claude Code routine on your Max plan. A machine offers it once you've saved the routine's token on it, and only for the repos its routine file lists: see [docs/claude-cloud-setup.md](docs/claude-cloud-setup.md).
 
 - It starts from the project's default branch on origin (or the branch the job names), so unpushed local changes aren't there.
 - The cloud session pushes to a `claude/opnav-…` branch. The machine brings that in and lands it like any job (with push, on that same branch).
