@@ -29,6 +29,13 @@ interface WorktreeRecord {
    * rewritten, so a retry still sees only its own commits, and knows its earlier push when origin has it.
    */
   landed?: { tip: string; commit: string };
+  /**
+   * For a pushing job: the branch it lands on, chosen when it started. The branch the job named
+   * (asked), or else origin's default branch. Never just the branch the checkout was on. Records
+   * from older helpers lack it: they land on baseRef's branch, and only if that's the default one.
+   */
+  land?: string;
+  asked?: boolean;
 }
 
 export class WorktreeError extends Error {}
@@ -108,8 +115,10 @@ async function recordAt(path: string): Promise<WorktreeRecord> {
   const sha = (value: unknown) => typeof value === "string" && /^[a-f0-9]{40,64}$/.test(value) ? value : undefined;
   const landed = record.landed && sha(record.landed.tip) && sha(record.landed.commit)
     ? { tip: record.landed.tip, commit: record.landed.commit } : undefined;
+  const land = typeof record.land === "string" && branchName(record.land) ? record.land : undefined;
   return { jobId: record.jobId, checkout: record.checkout, baseRef: record.baseRef, createdAt: record.createdAt, start,
-    repo: text(record.repo), fetchUrl: text(record.fetchUrl), pushUrl: text(record.pushUrl), ...(landed ? { landed } : {}) };
+    repo: text(record.repo), fetchUrl: text(record.fetchUrl), pushUrl: text(record.pushUrl), ...(landed ? { landed } : {}),
+    ...(land ? { land, asked: record.asked === true } : {}) };
 }
 
 async function registered(sys: System, checkout: string, path: string, branch: string) {
@@ -196,11 +205,16 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
     throw error;
   });
   if (!exists) {
-    // A job that pushes lands on its checkout's branch on origin, so it starts from there.
-    // If origin can't be fetched (or the server didn't say which repo the job belongs to) it starts
-    // from this machine's HEAD, and then it never pushes: that history may hold commits that were
-    // never meant to leave this machine.
-    const base = job.push && checked?.pushUrl || fromOrigin && checked ? landingBranch(saved.baseRef) : undefined;
+    // A job that pushes lands on the branch it named, or else on origin's default branch (where
+    // origin's HEAD points), so it starts from there on origin. Never on a branch just because this
+    // checkout (perhaps someone's side worktree) has it checked out. If origin can't be fetched (or
+    // the server didn't say which repo the job belongs to) it starts from this machine's HEAD, and
+    // then it never pushes: that history may hold commits that were never meant to leave this machine.
+    const fromRemote = job.push && checked?.pushUrl || fromOrigin && checked;
+    if (fromRemote && job.branch !== undefined && !branchName(job.branch)) {
+      throw new WorktreeError("The job names a branch to land on that isn't a branch name it can use.");
+    }
+    const base = fromRemote ? job.branch ?? await originDefault(sys, checkout, checked!.fetchUrl) : undefined;
     const start = base && await fetchBranch(sys, checkout, checked!.fetchUrl, base)
       .then(() => git(sys, checkout, "rev-parse", "--verify", `refs/remotes/origin/${base}^{commit}`))
       .then(sha => sha.trim(), () => undefined);
@@ -211,8 +225,9 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
       });
     await git(sys, checkout, "worktree", "add", "--lock",
       ...(branchExists ? [path, branch] : ["-b", branch, path, start || "HEAD"]));
-    if (!branchExists && start) {
-      saved = { ...saved, start, repo: job.remote, fetchUrl: checked!.fetchUrl, pushUrl: checked!.pushUrl };
+    if (!branchExists && base) {
+      saved = { ...saved, land: base, asked: job.branch !== undefined,
+        ...(start ? { start, repo: job.remote, fetchUrl: checked!.fetchUrl, pushUrl: checked!.pushUrl } : {}) };
       await writeFile(metadata, JSON.stringify(saved), { mode: 0o600 });
     }
   } else {
@@ -232,7 +247,7 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
   return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message, branch),
     push: (signal?: AbortSignal) => oneAtATime(checkout, () => pushWork(sys, path, landing, branch, signal, remember)),
     /** The branch it lands on and the commit it started from on origin, when it started there. */
-    landing: landing.start ? { base: landingBranch(landing.baseRef), start: landing.start } : undefined,
+    landing: landing.start ? { base: landingBranch(landing), start: landing.start } : undefined,
     /** A branch's commit on origin (at the checked address), or undefined when origin hasn't got it. */
     remoteBranch: (name: string, signal?: AbortSignal) => remoteBranch(sys, path, fetchUrl, name, signal),
     /** Fetch a branch from origin (at the checked address) and return its tip. */
@@ -301,9 +316,31 @@ export async function commitLeftovers(sys: System, path: string, message: string
   return (await git(sys, path, "rev-parse", "--short", "HEAD")).trim();
 }
 
-/** The branch a pushing job lands on: the checkout's branch, unless it was detached or a job's own. */
-function landingBranch(baseRef: string): string | undefined {
+/**
+ * The branch a pushing job lands on: the one chosen when it started. A record from an older helper
+ * has only the checkout's branch, unless that was detached or a job's own.
+ */
+function landingBranch(record: Pick<WorktreeRecord, "baseRef" | "land">): string | undefined {
+  if (record.land) return record.land;
+  const { baseRef } = record;
   return baseRef.startsWith("refs/heads/") && !baseRef.startsWith("refs/heads/opnav/") ? baseRef.slice("refs/heads/".length) : undefined;
+}
+
+/** A branch name a job may land on: plain, not an option, not a job's own branch. */
+function branchName(name: string): boolean {
+  return /^[\w][\w./-]*$/.test(name) && !name.startsWith("opnav/") && !/\.\.|\/\/|\/$|\.lock$|\.$|@\{/.test(name);
+}
+
+/**
+ * The project's default branch: the one origin's HEAD points to (main or master), as origin says
+ * at the checked address, or else as this checkout last heard it. Undefined when neither knows.
+ */
+export async function originDefault(sys: System, cwd: string, url: string | undefined, signal?: AbortSignal): Promise<string | undefined> {
+  const asked = url ? await network(sys, cwd, signal, "ls-remote", "--symref", "--", url, "HEAD").catch(() => "") : "";
+  const said = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(asked)?.[1];
+  const known = said ?? (await git(sys, cwd, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").catch(() => ""))
+    .trim().replace(/^refs\/remotes\/origin\//, "");
+  return known && branchName(known) ? known : undefined;
 }
 
 async function onBranch(sys: System, path: string, branch: string) {
@@ -417,12 +454,12 @@ export function gitReason(error: unknown): string {
  * push knows the work is already on origin when origin has that commit.
  */
 export async function pushWork(sys: System, path: string,
-  record: Pick<WorktreeRecord, "baseRef" | "start" | "repo" | "fetchUrl" | "pushUrl" | "landed">,
+  record: Pick<WorktreeRecord, "baseRef" | "start" | "repo" | "fetchUrl" | "pushUrl" | "landed" | "land" | "asked">,
   branch: string, signal?: AbortSignal, remember?: (landed: { tip: string; commit: string }) => Promise<void>): Promise<string> {
   const kept = `The work is on branch ${branch} on this machine.`;
   const cancelled = `Not pushed: the job was cancelled. ${kept}`;
   if (signal?.aborted) return cancelled;
-  const base = landingBranch(record.baseRef);
+  const base = landingBranch(record);
   if (!base) return `Not pushed: the checkout wasn't on a branch, so there was no branch to land the work on. ${kept}`;
   const { start, repo, fetchUrl, pushUrl } = record;
   if (start && !(repo && fetchUrl && pushUrl)) return `Not pushed: the job started without a checked address for its repo. ${kept}`;
@@ -447,6 +484,13 @@ export async function pushWork(sys: System, path: string,
     : await addressProblem(sys, path, repo!, fetchUrl!, pushUrl).catch(() => "could not read origin's address");
   if (problem) return `Not pushed: ${problem}. ${kept}`;
 
+  // The safety net: work lands on the project's default branch, or on a branch the job named on
+  // purpose. Never on some other branch (an old PR branch a side worktree happened to be on).
+  const main = await originDefault(sys, path, fetchUrl, signal);
+  if (signal?.aborted) return cancelled;
+  if (!main) return `Not pushed: could not tell which branch is origin's default, so it can't check that ${base} is the right branch to land on. ${kept}`;
+  if (base !== main && !record.asked) return `Not pushed: ${base} isn't ${main}, the project's default branch, and the job didn't ask for it. ${kept}`;
+
   // Where origin's branch is now. A retry whose earlier push got there has nothing left to do,
   // and says so before anything else is checked: nothing leaves this machine.
   let remote: string | undefined;
@@ -465,6 +509,15 @@ export async function pushWork(sys: System, path: string,
   if (remote && await ancestor(tip, remote)) return onOrigin;
   const landed = record.landed;
   if (remote && landed && landed.tip === tip && await ancestor(landed.commit, remote)) return onOrigin;
+  // A branch the job named that's already merged into the default one is finished (an old PR's).
+  if (remote && base !== main) {
+    const merged = await fetchBranch(sys, path, fetchUrl!, main, signal)
+      .then(() => resolve(`refs/remotes/origin/${main}`))
+      .then(head => ancestor(remote!, head), () => undefined);
+    if (signal?.aborted) return cancelled;
+    if (merged === undefined) return `Not pushed: could not fetch ${main} from origin to check that ${base} isn't already merged into it. ${kept}`;
+    if (merged) return `Not pushed: ${base} is already merged into ${main}, the project's default branch. ${kept}`;
+  }
 
   // The job's commits are its own: none of them is on another branch of this checkout.
   const count = async (...args: string[]) => Number((await git(sys, path, "rev-list", "--count", tip, `^${start}`, ...args)).trim());
@@ -548,13 +601,15 @@ export async function pruneWorktrees(sys: System, now = Date.now()) {
     const path = join(dir, id);
     const branch = `opnav/${id}`;
     try {
-      const { jobId, checkout, baseRef, createdAt, landed } = await recordAt(join(dir, file));
+      const record = await recordAt(join(dir, file));
+      const { jobId, checkout, createdAt, landed } = record;
       if (!jobId.startsWith(id) || !await registered(sys, checkout, path, branch)) continue;
-      const within = (commit: string) => git(sys, checkout, "merge-base", "--is-ancestor", commit, baseRef).then(() => true, () => false);
-      // Merged: the branch is in the checkout's branch, or the copy of it that was replayed and pushed is.
+      // Merged into the branch it lands on (or, for an older record, the checkout's branch).
+      const into = landingBranch(record);
+      const within = (commit: string) => git(sys, checkout, "merge-base", "--is-ancestor", commit, `refs/heads/${into}`).then(() => true, () => false);
+      // Merged: the branch is in that branch, or the copy of it that was replayed and pushed is.
       const tip = landed && (await git(sys, checkout, "rev-parse", "--verify", `refs/heads/${branch}^{commit}`).catch(() => "")).trim();
-      const merged = baseRef.startsWith("refs/heads/") && !baseRef.startsWith("refs/heads/opnav/") &&
-        (await within(`refs/heads/${branch}`) || !!landed && tip === landed.tip && await within(landed.commit));
+      const merged = !!into && (await within(`refs/heads/${branch}`) || !!landed && tip === landed.tip && await within(landed.commit));
       if (!merged && now - createdAt <= maxAge) continue;
       // Git refuses to remove active or dirty worktrees. The branch keeps committed work available.
       await git(sys, checkout, "worktree", "remove", path);

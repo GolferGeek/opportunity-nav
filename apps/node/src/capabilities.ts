@@ -44,13 +44,18 @@ export async function checkouts(sys: System, roots: string[], maxDepth: number):
   const found = new Map<string, Checkout>();
   async function scan(path: string, depth: number) {
     const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
-    if (entries.some(entry => entry.name === ".git" && (entry.isDirectory() || entry.isFile()))) {
+    const dotGit = entries.find(entry => entry.name === ".git" && (entry.isDirectory() || entry.isFile()));
+    if (dotGit) {
       // origin's address as Git will really use it, after any insteadOf rewrite.
-      const [remote, branch] = await Promise.all([
+      const [remote, branch, head] = await Promise.all([
         command(sys, "git", ["remote", "get-url", "origin"], path),
         command(sys, "git", ["branch", "--show-current"], path),
+        command(sys, "git", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], path),
       ]);
-      found.set(path, { path, remote: normalizeRemote(remote), branch: branch || undefined });
+      const defaultBranch = head.startsWith("origin/") ? head.slice("origin/".length) : "";
+      // A .git file is a linked worktree (or a submodule): someone's side checkout, not the repo's own.
+      found.set(path, { path, remote: normalizeRemote(remote), branch: branch || undefined, linked: dotGit.isFile(),
+        ...(defaultBranch ? { defaultBranch } : {}) });
       return;
     }
     if (depth >= maxDepth) return;

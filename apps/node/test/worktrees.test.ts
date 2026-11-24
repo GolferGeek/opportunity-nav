@@ -281,7 +281,7 @@ async function pushFixture(t: TestContext, agent: (home: string) => string[] = (
     git(other, "commit", "--quiet", "-m", `Elsewhere: ${file}`);
     git(other, "push", "--quiet", "origin", "main");
   };
-  return { sys, home, data, origin, checkout, spec, run, moveOrigin, worker };
+  return { sys, home, data, origin, checkout, other, spec, run, moveOrigin, worker };
 }
 
 test("a job that pushes starts from origin's branch and lands its work there", async t => {
@@ -297,6 +297,98 @@ test("a job that pushes starts from origin's branch and lands its work there", a
   // The checkout itself is left alone.
   assert.equal(git(checkout, "status", "--porcelain"), "");
   assert.equal(git(checkout, "log", "-1", "--format=%s"), "Initial commit");
+});
+
+/**
+ * The Studio on 2026-11-23: the job's checkout is a hand-made linked worktree on an old PR branch,
+ * already merged into main on origin, while the repo's own checkout is on main.
+ */
+async function sideWorktree(t: TestContext) {
+  const f = await pushFixture(t);
+  const side = join(f.home, "side");
+  git(f.checkout, "worktree", "add", "--quiet", "-b", "fix/old", side);
+  await writeFile(join(side, "old.txt"), "old fix\n");
+  git(side, "add", "old.txt");
+  git(side, "commit", "--quiet", "-m", "Old fix");
+  git(side, "push", "--quiet", "origin", "fix/old");
+  git(f.checkout, "merge", "--quiet", "--ff-only", "fix/old");
+  git(f.checkout, "push", "--quiet", "origin", "main");
+  await f.moveOrigin("after.txt", "main moved on after the merge\n");
+  f.spec.checkoutPath = side;
+  return { ...f, side, oldTip: git(f.origin, "rev-parse", "fix/old") };
+}
+
+test("a job that pushes lands on origin's default branch, not the old branch its side worktree is on", async t => {
+  const { origin, side, spec, run, data, oldTip } = await sideWorktree(t);
+  const { outcome, progress } = await run();
+  assert.deepEqual(outcome, { type: "result", summary: "Done." });
+  assert.equal(progress.at(-1), `Pushed to main as ${git(origin, "rev-parse", "--short", "main")}.`);
+  assert.equal(git(origin, "show", "--name-only", "--format=", "main"), "fix.txt");
+  assert.equal(git(origin, "log", "-1", "--format=%s", "main~1"), "Elsewhere: after.txt", "it started from main on origin");
+  assert.equal(git(origin, "rev-parse", "fix/old"), oldTip, "the old branch is untouched");
+  assert.equal(git(side, "branch", "--show-current"), "fix/old");
+  const record = JSON.parse(await readFile(join(data, "opportunity-nav", "worktrees", `${spec.id.slice(0, 8)}.json`), "utf8"));
+  assert.equal(record.baseRef, "refs/heads/fix/old");
+  assert.equal(record.land, "main");
+  assert.equal(record.asked, false);
+});
+
+test("a job that names a branch lands there, but never on one already merged into the default branch", async t => {
+  const { origin, other, spec, run, oldTip } = await sideWorktree(t);
+  git(other, "pull", "--quiet");
+  git(other, "checkout", "--quiet", "-b", "feature");
+  await writeFile(join(other, "feature.txt"), "feature work\n");
+  git(other, "add", "feature.txt");
+  git(other, "commit", "--quiet", "-m", "Feature work");
+  git(other, "push", "--quiet", "origin", "feature");
+  spec.branch = "feature";
+  const named = await run();
+  assert.equal(named.progress.at(-1), `Pushed to feature as ${git(origin, "rev-parse", "--short", "feature")}.`);
+  assert.equal(git(origin, "log", "-2", "--format=%s", "feature"), "Fix it\nFeature work");
+  assert.equal(git(origin, "log", "-1", "--format=%s", "main"), "Elsewhere: after.txt");
+
+  const mainBefore = git(origin, "rev-parse", "main");
+  const again = { ...spec, id: randomUUID(), branch: "fix/old" };
+  Object.assign(spec, again);
+  const merged = await run();
+  const branch = `opnav/${again.id.slice(0, 8)}`;
+  assert.equal(merged.progress.at(-1), `Not pushed: fix/old is already merged into main, the project's default branch. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "fix/old"), oldTip);
+  assert.equal(git(origin, "rev-parse", "main"), mainBefore);
+  assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+});
+
+test("a job an older helper started on a side worktree's branch isn't pushed there", async t => {
+  // Its record has only the checkout's branch: no landing branch chosen when it started.
+  const { origin, checkout, side, spec, run, sys, data, oldTip } = await sideWorktree(t);
+  await (await openWorktree(sys, spec)).release();
+  const file = join(data, "opportunity-nav", "worktrees", `${spec.id.slice(0, 8)}.json`);
+  const { land: _l, asked: _a, ...record } = JSON.parse(await readFile(file, "utf8"));
+  record.start = git(checkout, "rev-parse", "fix/old");
+  await writeFile(file, JSON.stringify(record));
+  const wt = join(data, "opportunity-nav", "worktrees", spec.id.slice(0, 8));
+  git(wt, "reset", "--quiet", "--hard", "fix/old");
+  const mainBefore = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  const { progress } = await run();
+  assert.equal(progress.at(-1), `Not pushed: fix/old isn't main, the project's default branch, and the job didn't ask for it. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "fix/old"), oldTip);
+  assert.equal(git(origin, "rev-parse", "main"), mainBefore);
+  assert.equal(git(side, "rev-parse", "HEAD"), oldTip);
+});
+
+test("a job that pushes lands on master when that's where origin's HEAD points", async t => {
+  const { origin, spec, run, home } = await pushFixture(t);
+  git(origin, "branch", "master", "main");
+  git(origin, "symbolic-ref", "HEAD", "refs/heads/master");
+  git(origin, "update-ref", "-d", "refs/heads/main");
+  const fresh = join(home, "fresh");
+  git(home, "clone", "--quiet", origin, fresh);
+  git(fresh, "checkout", "--quiet", "-b", "topic");
+  spec.checkoutPath = fresh;
+  const { progress } = await run();
+  assert.equal(progress.at(-1), `Pushed to master as ${git(origin, "rev-parse", "--short", "master")}.`);
+  assert.equal(git(origin, "branch", "--list", "topic", "main"), "");
 });
 
 test("a job that pushes rebases onto origin when it moved on while it ran", async t => {
@@ -682,6 +774,24 @@ test("a job that pushes never pushes a submodule's commits, whatever push.recurs
   assert.equal(git(origin, "show", "--name-only", "--format=", "main"), "fix.txt\nlib");
   assert.equal(git(lib, "rev-parse", "main"), libBefore, "the submodule's origin is untouched");
   assert.equal(git(lib, "for-each-ref", "--format=%(refname)").split("\n").length, 1);
+});
+
+test("a checkout says whether it's a linked worktree and which branch is origin's default", async t => {
+  const { home, checkout } = await fixture(t);
+  const origin = join(home, "origin.git");
+  git(home, "clone", "--quiet", "--bare", checkout, origin);
+  const clone = join(home, "clone");
+  git(home, "clone", "--quiet", origin, clone);
+  const side = join(home, "side");
+  git(clone, "worktree", "add", "--quiet", "-b", "fix/old", side);
+  const sys = system({ home, env: { PATH: process.env.PATH } });
+  const found = await checkouts(sys, [home], 1);
+  const own = found.find(c => c.path === clone)!;
+  assert.deepEqual([own.branch, own.linked, own.defaultBranch], ["main", false, "main"]);
+  assert.deepEqual(found.find(c => c.path === side)?.linked, true);
+  assert.deepEqual(found.find(c => c.path === side)?.branch, "fix/old");
+  assert.deepEqual(found.find(c => c.path === side)?.defaultBranch, "main");
+  assert.equal(found.find(c => c.path === checkout)?.defaultBranch, undefined, "no origin, no default branch");
 });
 
 test("a checkout reports origin's address as Git will really use it", async t => {

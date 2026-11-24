@@ -19,7 +19,9 @@ No `worker:` runs on the Studio as before.
 
 ## Where the work lands
 
-`push: true` lands the work on the checkout's branch and pushes it, rebasing first if origin moved.
+`push: true` lands the work on the repo's default branch (where origin's HEAD points, `main` or `master`) and pushes it, rebasing first if origin moved.
+A brief that names a branch on purpose lands there instead, unless that branch is already merged into the default one.
+It never lands on a branch just because some worktree on the machine has it checked out.
 If that fails, it pushes the job's branch `opnav/<id>` instead and says so.
 `commit: true`, or neither: the work stays on `opnav/<id>` on that machine.
 

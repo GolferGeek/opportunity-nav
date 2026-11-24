@@ -70,11 +70,15 @@ Start a job from any project: pick the agent, the model, and local or cloud. A m
 Coding jobs run in a separate Git worktree on branch `opnav/<first 8 characters of the job ID>`. Workers commit there and never push.
 
 A job started with `push` (a handoff brief with `push: true` does this) lands its work instead:
-- Its worktree starts from the checkout's branch on origin, e.g. `main`.
+- It lands on the project's default branch, the one origin's HEAD points to (`main` or `master`), unless the job names a branch on purpose. Never on a branch just because the checkout happens to have it checked out.
+- Its worktree starts from that branch on origin.
 - When it succeeds, the helper asks the server first, then pushes it there.
 - If origin moved on, it replays the job's commits on top (Git 2.44 or later), on a temporary ref: `opnav/<id>` itself is never rewritten, so a retry checks the same commits and knows when its earlier push already landed.
 - If that conflicts or the push is refused, it pushes `opnav/<id>` instead, and the job's last progress line says so.
 - It pushes only that one branch: never tags, never a submodule's commits, whatever the machine's Git settings say.
+- Safety net, checked right before it pushes: if the landing branch isn't the default branch and the job didn't name it, or it's already merged into the default branch, nothing is pushed. The last progress line says "Not pushed" and why, and the work stays on `opnav/<id>`.
+
+Which checkout: when a machine has several checkouts of a repo, a job runs in one on the default branch first, then the repo's own checkout before linked worktrees (`git worktree add`), then by path. A job that names a branch runs in a checkout on that branch.
 
 Stop vs push: the server decides, under the job's lock.
 - A Stop accepted before the helper asks to push wins: nothing is pushed, and the job ends cancelled even if its result comes in after.
@@ -122,8 +126,8 @@ A job can run on your own machine (the default) or in Cloudroom's cloud sandbox.
 
 A Claude job can also run in Claude's own cloud, through a Claude Code routine on your Max plan. A machine offers it once you've saved the routine's token on it: see [docs/claude-cloud-setup.md](docs/claude-cloud-setup.md).
 
-- It starts from the checkout's branch on origin, so unpushed local changes aren't there.
-- The cloud session pushes to a `claude/opnav-…` branch. The machine brings that in and lands it like any job (with push, on the checkout's branch).
+- It starts from the project's default branch on origin (or the branch the job names), so unpushed local changes aren't there.
+- The cloud session pushes to a `claude/opnav-…` branch. The machine brings that in and lands it like any job (with push, on that same branch).
 - There's no status API: a run that never pushes shows up only as a timeout (45 minutes, then one more try).
 
 ## Developing
