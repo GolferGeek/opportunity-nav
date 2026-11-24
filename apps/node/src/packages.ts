@@ -40,7 +40,7 @@ export async function lockfileManager(path: string): Promise<Manager | "other" |
 export function installArgs(manager: Manager): string[] {
   return manager === "npm"
     ? ["ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--no-update-notifier", "--loglevel=error"]
-    : ["install", "--offline", "--frozen-lockfile", "--ignore-scripts", "--reporter=silent"];
+    : ["install", "--offline", "--frozen-lockfile", "--ignore-scripts", "--reporter=append-only"];
 }
 
 /** A plain reason from the package manager's error output: its error code, never the raw text. */
