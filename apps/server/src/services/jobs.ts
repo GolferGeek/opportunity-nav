@@ -15,7 +15,7 @@ import {
 import type { Db, Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { getNode, listTree, projectOf } from "./tree.ts";
-import { checkoutFor, hasLocalModels, heldBack, loadBusy, loadRanking, markBusy, orderQueue, placeInApp, queuedRows, slotsView, turnBlocked, type Offer } from "./backlog.ts";
+import { checkoutFor, hasLocalModels, heldBack, loadBusy, loadRanking, markBusy, orderQueue, placeInApp, queuedRows, slotsView, turnBlocked, type Offer, type OfferedCheckout } from "./backlog.ts";
 
 export const MAX_ATTEMPTS = 3;
 
@@ -188,7 +188,7 @@ export function jobRow(r: any) {
 export async function claim(sql: Sql, userId: string, machineId: string, req: ClaimRequest): Promise<Turn[]> {
   return sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(hashtext(${`opnav-claim:${userId}`}))`;
-    const [machine] = await tx<{ checkouts: { path: string; remote?: string; branch?: string }[]; tools: string[]; capacity: number; job_limit: number | null; cloud_capacity: number | null; taking_jobs: boolean; providers: any[] }[]>`
+    const [machine] = await tx<{ checkouts: OfferedCheckout[]; tools: string[]; capacity: number; job_limit: number | null; cloud_capacity: number | null; taking_jobs: boolean; providers: any[] }[]>`
       select checkouts, tools, capacity, job_limit, cloud_capacity, taking_jobs, providers from nodes where id = ${machineId} and user_id = ${userId} for update`;
     if (!machine) throw new HttpError(401, "Unknown machine; send a heartbeat first.");
     if (!machine.taking_jobs) return [];
@@ -254,6 +254,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
           nodeId: machineId,
           issueUrl: r.issue_url ?? undefined,
           ...(r.push ? { push: true } : {}),
+          ...(r.branch ? { branch: r.branch } : {}),
         },
         providerSessionId: r.kind === "continue" ? (r.provider_session_id ?? undefined) : undefined,
         answer,

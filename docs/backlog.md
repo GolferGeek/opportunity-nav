@@ -66,7 +66,8 @@ Without `--apply` it only prints what it would add. With `--apply` it does the i
 
 - **Key:** each item's `key` is the brief's name, so a brief can't be added twice.
 - **Front matter:** `title`, `repo`, `priority`, `commit`, `push`, `after`, `worker`, `agent`, `model`, `effort`, `needs` and `local_model` map the way the routed dispatcher maps them.
-  - No `worker:`, or `studio`: pinned to the Studio, from the checkout's current branch.
+  - `branch:` names the branch a pushing job lands on, on purpose. Without it, it lands on the repo's default branch.
+  - No `worker:`, or `studio`: pinned to the Studio. A pushing job lands on the repo's default branch (see README, Jobs), whatever branch its checkout is on.
   - `any`: any machine.
   - `cloudroom`: Cloudroom.
   - Any other name: that machine.

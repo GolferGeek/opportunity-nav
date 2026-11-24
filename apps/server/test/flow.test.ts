@@ -830,6 +830,8 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     const got = new Map([...fromS, ...fromL].map((t: any) => [t.job.id, t]));
     assert.ok(got.has(p1.id) && !got.has(p2.id), "Push 2 waits for main");
     assert.equal(got.get(pf.id)?.job.checkoutPath.endsWith("/app-feature"), true, "the feature item runs from the feature checkout");
+    assert.equal(got.get(pf.id)?.job.branch, "feature", "the job says which branch it asked to land on");
+    assert.equal(got.get(p1.id)?.job.branch, undefined, "a job that names no branch lands on the default one");
     assert.ok(got.has(n1.id), "a job that doesn't push isn't held back");
     lu = await act("get_lined_up", {});
     assert.match(lu.next.find((i: any) => i.id === p2.id).why, /main to be free/);

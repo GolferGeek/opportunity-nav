@@ -120,12 +120,33 @@ export interface Offer {
   cloudroomProviders: string[];
   claudeCloud: boolean;
   tools: string[];
-  checkouts: { path: string; remote?: string; branch?: string }[];
+  checkouts: OfferedCheckout[];
   /** It has its own local models (Ollama). */
   localModels: boolean;
 }
 
-/** The checkout this machine would run the turn in, or why it can't. */
+export interface OfferedCheckout { path: string; remote?: string; branch?: string; linked?: boolean; defaultBranch?: string }
+
+/** The project's default branch as this checkout knows it; older helpers don't say, so main or master on their word. */
+function onDefault(c: OfferedCheckout): boolean {
+  return c.defaultBranch ? c.branch === c.defaultBranch : c.branch === "main" || c.branch === "master";
+}
+
+/**
+ * The checkouts of one repo on a machine, best first: one on the project's default branch, then
+ * the repo's own checkout before linked worktrees (someone's side work), then by path. A machine
+ * can have many hand-made worktrees of a repo; which one sorts first by path means nothing.
+ */
+export function rankCheckouts(same: OfferedCheckout[]): OfferedCheckout[] {
+  const score = (c: OfferedCheckout) => (onDefault(c) ? 0 : 2) + (c.linked ? 1 : 0);
+  return [...same].sort((a, b) => score(a) - score(b) || a.path.localeCompare(b.path));
+}
+
+/**
+ * The checkout this machine would run the turn in, or why it can't, and the branch the job works
+ * toward: the one it names, or the project's default branch. A pushing job lands there, so that's
+ * the branch two pushing jobs mustn't share.
+ */
 export function checkoutFor(r: QueuedRow, m: Offer): { path: string; branch: string | null } | { why: string } {
   if (r.node_id && r.node_id !== m.id) return { why: "pinned to another machine" };
   const agentOk = r.runner === "direct" ? m.providers.includes(r.provider)
@@ -139,9 +160,11 @@ export function checkoutFor(r: QueuedRow, m: Offer): { path: string; branch: str
   if (!r.repo_remote) return { why: "no repo" };
   const same = m.checkouts.filter((c) => c.remote && normaliseRemote(c.remote) === r.repo_remote);
   if (!same.length) return { why: "no checkout of the repo" };
-  const c = r.branch ? same.find((c) => c.branch === r.branch) : same[0];
+  const ranked = rankCheckouts(same);
+  // A job that names a branch runs in a checkout on it (an older helper lands on the checkout's branch).
+  const c = r.branch ? ranked.find((c) => c.branch === r.branch) : ranked[0];
   if (!c) return { why: `no checkout on ${r.branch}` };
-  return { path: c.path, branch: c.branch ?? null };
+  return { path: c.path, branch: r.branch ?? c.defaultBranch ?? c.branch ?? null };
 }
 
 /** What's running right now, as the rules see it. */

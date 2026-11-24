@@ -4,7 +4,7 @@
  *   npm run -s backlog-import -w @opnav/server -- [--apply] [--app <slug>=<App> ...] <dir> [<dir> ...]
  *
  * Reads each brief's front matter (title, repo, priority, commit, push, after,
- * worker, agent, model, effort, needs, local_model, app) and adds it with
+ * worker, agent, model, effort, needs, local_model, app, branch) and adds it with
  * add_to_backlog, keyed by the brief's name so it can never be added twice.
  * Without --apply it only says what it would do.
  *
@@ -15,10 +15,11 @@
  * refuses it, the brief goes back where it was.
  *
  * Mapping, the same as the routed dispatcher's:
- *   worker: (none) / studio / here  → pinned to this machine (--studio, default this host's name), from the repo checkout's current branch
+ *   worker: (none) / studio / here  → pinned to this machine (--studio, default this host's name)
  *   worker: any                     → any machine that can
  *   worker: cloudroom               → runner cloudroom
  *   worker: <name>                  → pinned to that machine
+ *   branch: <name> → the branch it lands on, on purpose; without it a pushing job lands on the repo's default branch
  *   agent → provider (default claude); push: true → push; after → after; local_model → localModel (only where the
  *   Studio's models are: not for a brief pinned to another machine or a cloud)
  *   priority high/urgent first, then normal, then low, then by name, inside each app
@@ -107,17 +108,18 @@ function plan(file: string): Plan {
 
   const worker = (fm.get("worker") ?? "").trim().toLowerCase();
   const agent = (fm.get("agent") ?? "claude").trim().toLowerCase();
-  let machine: string | undefined, runner: string | undefined, branch: string | undefined;
+  let machine: string | undefined, runner: string | undefined;
+  // Only a branch the brief names on purpose. Whatever the repo path has checked out means nothing.
+  const branch = fm.get("branch")?.trim() || undefined;
   if (worker === "" || worker === "studio" || worker === "here" || worker === studio.toLowerCase()) {
     machine = studio;
-    branch = git(repo, "branch", "--show-current") || undefined;
   } else if (worker === "cloudroom") runner = "cloudroom";
   else if (worker !== "any") machine = fm.get("worker")!.trim();
   const localModel = truthy(fm.get("local_model")) && !runner && (!machine || machine === studio);
   const push = truthy(fm.get("push"));
   const commit = push || truthy(fm.get("commit"));
   const gitNote = push
-    ? "Commit your work on this job's branch. When you finish, Opportunity Nav lands it on the branch this checkout is on (e.g. main) and pushes it; don't push yourself. No pull requests."
+    ? `Commit your work on this job's branch. When you finish, Opportunity Nav lands it on ${branch ?? "the repo's default branch (e.g. main)"} and pushes it; don't push yourself. No pull requests.`
     : commit
       ? "Commit your work on this job's branch. Don't push. It stays on that branch, on this machine, for review."
       : "Don't push. Whatever you leave is kept on this job's branch, on this machine, for review.";
