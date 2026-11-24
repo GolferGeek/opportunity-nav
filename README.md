@@ -69,6 +69,13 @@ Start a job from any project: pick the agent, the model, and local or cloud. A m
 
 Coding jobs run in a separate Git worktree on branch `opnav/<first 8 characters of the job ID>`. Workers commit there and never push.
 
+When a job's worktree is new, the helper installs the repo's packages before the agent starts, so the agent can run the repo's tests:
+- npm (`package-lock.json`): `npm ci --offline --ignore-scripts`. pnpm (`pnpm-lock.yaml`): `pnpm install --offline --frozen-lockfile --ignore-scripts`.
+- Offline only: packages come from this machine's npm cache or pnpm store, never the registry. No package scripts run.
+- Lockfiles are never changed, and nothing is committed. Anything tracked the install touched is put back.
+- It is skipped when `node_modules` isn't ignored by Git, or the repo uses another package manager.
+- If it can't install (a package isn't in the cache, or it takes over 2 minutes), the job log says why and the job goes on without packages.
+
 A job started with `push` (a handoff brief with `push: true` does this) lands its work instead:
 - It lands on the project's default branch, the one origin's HEAD points to (`main` or `master`), unless the job names a branch on purpose. Never on a branch just because the checkout happens to have it checked out.
 - Its worktree starts from that branch on origin.

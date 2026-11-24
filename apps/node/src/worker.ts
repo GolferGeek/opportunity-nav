@@ -5,6 +5,7 @@ import type { Turn } from "@opnav/shared";
 import { claudeActivity, codexActivity, shortText, toolLine } from "./activity.ts";
 import { executable, object, parse, string } from "./system.ts";
 import type { System } from "./system.ts";
+import { installPackages } from "./packages.ts";
 import { openWorktree, WorktreeError, worktreeEnv } from "./worktrees.ts";
 
 type WithoutEnvelope<T> = T extends unknown ? Omit<T, "seq" | "at"> : never;
@@ -173,6 +174,11 @@ export async function runWorker(sys: System, binary: string, turn: Turn, signal:
     return { type: "error", code: "other", message: worktree.message, retryable: false };
   }
   try {
+    // A new worktree has no packages: install them offline so the agent can run the repo's tests.
+    if (worktree.created) {
+      const said = await installPackages(sys, worktree.path, signal).catch(() => "Packages not installed: the install couldn't start.");
+      if (said) emit({ type: "progress", text: said });
+    }
     const outcome = await runInWorktree(sys, binary, turn, signal, emit, autonomy, worktree.path, worktree.branch);
     let committed = false;
     if (outcome.type !== "error" || outcome.code !== "cancelled") {

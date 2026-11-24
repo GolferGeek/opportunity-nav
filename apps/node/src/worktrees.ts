@@ -56,6 +56,12 @@ export function worktreeEnv(sys: System) {
     "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_PREFIX", "GIT_QUARANTINE_PATH"]) {
     delete env[key];
   }
+  // A helper started by `npm run` inherits npm's settings for that run, among them
+  // npm_config_local_prefix (the helper's own repo): npm and pnpm in a job's worktree would
+  // install into, or run scripts from, that repo instead.
+  for (const key of Object.keys(env)) {
+    if (/^npm_/i.test(key) || key === "INIT_CWD") delete env[key];
+  }
   return env;
 }
 
@@ -244,7 +250,7 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
     landing = { ...landing, landed };
     await writeFile(metadata, JSON.stringify(landing), { mode: 0o600 });
   };
-  return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message, branch),
+  return { path, branch, created: !exists, commit: (message: string) => commitLeftovers(sys, path, message, branch),
     push: (signal?: AbortSignal) => oneAtATime(checkout, () => pushWork(sys, path, landing, branch, signal, remember)),
     /** The branch it lands on and the commit it started from on origin, when it started there. */
     landing: landing.start ? { base: landingBranch(landing), start: landing.start } : undefined,
