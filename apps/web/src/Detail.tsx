@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, providerName, runsOnText, type Need, type Priority, type TreeNode } from "./api.ts";
+import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, needsText, providerName, runsOnText, type Need, type Priority, type TreeNode } from "./api.ts";
 import { ANY_MACHINE, keepWhere, whereOptions, whereToJob, type MachineLite, type Where } from "./where.ts";
 
 export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: {
@@ -132,7 +132,8 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
     }).catch(() => {});
     return () => { live = false; };
   }, [node.id, node.repoRemote]);
-  const whereOpts = useMemo(() => whereOptions(machines, provider, repo, providerName), [machines, provider, repo]);
+  const whereOpts = useMemo(() => whereOptions(machines, provider, repo, needs, { agent: providerName, needs: needsText }),
+    [machines, provider, repo, needs]);
   // A choice that stops fitting (another agent, a routine that no longer covers the repo) goes back to any machine.
   const chosen = keepWhere(where, whereOpts);
   useEffect(() => { if (chosen !== where) setWhere(chosen); }, [chosen, where]);

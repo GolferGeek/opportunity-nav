@@ -15,6 +15,7 @@ export type MachineLite = {
   name: string;
   online?: boolean;
   takingJobs?: boolean;
+  tools?: string[];
   providers?: { provider: string; signedIn?: boolean; canRunJobs?: boolean }[];
   cloudroom?: { providers?: string[] } | null;
   claudeCloud?: { ready?: boolean; repos?: string[] } | null;
@@ -27,18 +28,22 @@ export const runsAgent = (m: MachineLite, provider: string) =>
   (m.providers ?? []).some((p) => p.provider === provider && p.signedIn && p.canRunJobs);
 
 /**
- * The choices for this agent and repo. A machine is listed when it's online and
- * taking jobs; it's greyed out when it can't run this agent. Claude's cloud shows
+ * The choices for this agent, repo and needs. Only machines online and taking jobs
+ * count. A machine is greyed out when it can't run this agent or lacks a need
+ * (whether it has the repo checked out isn't known here). Claude's cloud shows
  * only when an online machine's routine covers the project's repo (an item has no
  * repo of its own, so it's the project's), and Cloudroom only when an online
  * machine has it; each is greyed out for an agent it can't run.
  */
-export function whereOptions(machines: MachineLite[], provider: string, repo: string | null, providerLabel: (p: string) => string): WhereOption[] {
-  const online = machines.filter((m) => m.online);
+export function whereOptions(machines: MachineLite[], provider: string, repo: string | null, needs: string[],
+  names: { agent: (p: string) => string; needs: (n: string[]) => string }): WhereOption[] {
+  // A machine that's stopped taking jobs claims nothing, cloud jobs included.
+  const online = machines.filter((m) => m.online && m.takingJobs !== false);
   const opts: WhereOption[] = [{ value: ANY_MACHINE, label: "Any machine" }];
-  for (const m of online.filter((m) => m.takingJobs !== false)) {
-    const can = runsAgent(m, provider);
-    opts.push({ value: `machine:${m.id}`, label: `On ${shortName(m.name)}${can ? "" : ` (no ${providerLabel(provider)})`}`, disabled: !can });
+  for (const m of online) {
+    const missing = needs.filter((n) => !(m.tools ?? []).includes(n));
+    const why = !runsAgent(m, provider) ? names.agent(provider) : missing.length ? names.needs(missing) : null;
+    opts.push({ value: `machine:${m.id}`, label: `On ${shortName(m.name)}${why ? ` (no ${why})` : ""}`, disabled: why !== null });
   }
   if (claudeCloudCovers(online, repo)) {
     opts.push({ value: "claude-cloud", label: `In Claude's cloud${provider === "claude" ? "" : " (Claude only)"}`, disabled: provider !== "claude" });
