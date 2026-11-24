@@ -90,6 +90,7 @@ test("a job's model reads in plain words, and unknown says default model", () =>
 test("runsOn prefers the reported model and says local on the machine, or which cloud", () => {
   assert.deepEqual(runsOn({ provider: "claude", model: "opus", reportedModel: "claude-opus-4-5-20251101", runner: "direct", machine: "Studio" }),
     { model: "claude-opus-4-5", where: "local on Studio" });
+  assert.equal(runsOn({ provider: "claude", runner: "direct", machine: "GG-MacStudio.local" }).where, "local on GG-MacStudio", "short enough for a card");
   assert.deepEqual(runsOn({ provider: "codex", runner: "direct", machine: null }), { model: "default model", where: "local" });
   assert.deepEqual(runsOn({ provider: "claude", runner: "claude-cloud", machine: "Studio" }), { model: "default model", where: "cloud (Claude)" });
   assert.deepEqual(runsOn({ provider: "codex", model: "gpt-5", runner: "cloudroom", machine: "Omarchy" }), { model: "gpt-5 codex", where: "cloud (Cloudroom)" });

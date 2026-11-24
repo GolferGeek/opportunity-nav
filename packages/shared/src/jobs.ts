@@ -209,6 +209,6 @@ export function modelLabel(provider: string, model?: string | null): string {
 /** Where a job runs: on a machine (the node runs the agent there) or in a cloud the node hands it to. */
 export function runsOn(job: { provider: string; model?: string | null; reportedModel?: string | null; runner?: string | null; machine?: string | null }): RunsOn {
   const cloud = CLOUD_RUNNERS[job.runner ?? "direct"];
-  const where = cloud ? `cloud (${cloud})` : job.runner && job.runner !== "direct" ? "cloud" : job.machine ? `local on ${job.machine}` : "local";
+  const where = cloud ? `cloud (${cloud})` : job.runner && job.runner !== "direct" ? "cloud" : job.machine ? `local on ${job.machine.replace(/\.local$/i, "")}` : "local";
   return { model: modelLabel(job.provider, job.reportedModel || job.model), where };
 }
