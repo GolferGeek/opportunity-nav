@@ -226,7 +226,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
       if (heldBack(r, busy)) continue;
       const c = checkoutFor(r, offer);
       if ("why" in c) continue;
-      if (turnBlocked(r, machineId, c.branch, busy)) continue;
+      if (turnBlocked(r, machineId, busy)) continue;
       // Take it only if it's still queued and not being cancelled. The job is locked first, as cancelJob locks it, so the two can't deadlock.
       const [still] = await tx`select id from jobs where id = ${r.id} and status = 'queued' and not cancel_requested for update`;
       if (!still) continue;
@@ -236,7 +236,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
         where id = ${r.turn_id!} and status = 'queued' returning lease_id, lease_expires_at`;
       if (!t) continue;
       free[pool]--;
-      markBusy(r, machineId, c.branch, busy);
+      markBusy(r, machineId, busy);
       await tx`update jobs set status = 'running', node_id = ${machineId}, checkout_path = ${c.path}, checkout_branch = ${c.branch},
         attempts = attempts + 1, updated_at = now() where id = ${r.id}`;
       let answer: Turn["answer"];

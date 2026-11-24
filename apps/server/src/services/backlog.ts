@@ -24,7 +24,8 @@ import { checkJobShape, jobLocation, jobRow, runsOnRow } from "./jobs.ts";
  *     name) that hasn't succeeded yet;
  *   - local_model, while another local-model job runs on that machine (one job
  *     at a time uses a machine's own Ollama models), or on a machine without them;
- *   - push, while another pushing job runs for the same repo and branch.
+ *   - push, while another pushing job may land on the same repo branch. An unnamed destination
+ *     locks the repo because only the helper knows origin's live default branch.
  * Plus everything a claim already checked: the agent, the repo's checkout (on
  * the item's branch, if it names one), what it needs, a pinned machine, and the
  * machine's free slots (its helper's capacity, or its owner's lower limit).
@@ -176,13 +177,21 @@ export function checkoutFor(r: QueuedRow, m: Offer): { path: string; branch: str
 export interface Busy {
   /** Machines running a local-model job. */
   localModel: Set<string>;
-  /** "repo#branch" with a pushing job running. */
+  /** "repo#branch" with a pushing job running; "repo#*" means origin's live default branch. */
   pushing: Set<string>;
   /** Keys and ids that have succeeded (lower case). */
   done: Set<string>;
 }
 
 export const branchKey = (repo: string | null, branch: string | null) => `${repo ?? "?"}#${branch ?? "?"}`;
+const defaultBranchKey = (repo: string | null) => `${repo ?? "?"}#*`;
+
+/** An unnamed destination may resolve to any live default branch, regardless of a checkout's cached origin/HEAD. */
+function pushBlocked(repo: string | null, branch: string | null, pushing: Set<string>) {
+  if (pushing.has(defaultBranchKey(repo))) return true;
+  if (branch == null) return [...pushing].some((k) => k.startsWith(`${repo ?? "?"}#`));
+  return pushing.has(branchKey(repo, branch));
+}
 
 /**
  * Running jobs, for the rules. A running job's branch is the one it was handed
@@ -191,15 +200,14 @@ export const branchKey = (repo: string | null, branch: string | null) => `${repo
  */
 export async function loadBusy(db: Db, userId: string, afterKeys: string[]): Promise<Busy> {
   const running = await db`
-    select j.id, t.node_id, j.local_model, j.push, j.checkout_branch, j.checkout_path, p.repo_remote, n.checkouts
+    select j.id, t.node_id, j.local_model, j.push, j.branch, p.repo_remote
     from turns t join jobs j on j.id = t.job_id join tree_nodes p on p.id = j.project_id left join nodes n on n.id = t.node_id
     where j.user_id = ${userId} and t.status = 'running' and t.lease_expires_at > now()`;
   const busy: Busy = { localModel: new Set(), pushing: new Set(), done: new Set() };
   for (const r of running) {
     if (r.local_model && r.node_id) busy.localModel.add(r.node_id);
     if (r.push) {
-      const branch = r.checkout_branch ?? ((r.checkouts ?? []) as { path: string; branch?: string }[]).find((c) => c.path === r.checkout_path)?.branch ?? null;
-      busy.pushing.add(branchKey(r.repo_remote, branch));
+      busy.pushing.add(r.branch == null ? defaultBranchKey(r.repo_remote) : branchKey(r.repo_remote, r.branch));
     }
   }
   const wanted = [...new Set(afterKeys.map(key))];
@@ -226,16 +234,16 @@ export function heldBack(r: QueuedRow, busy: Busy): string | null {
 }
 
 /** Why this machine can't take it now because of what's running, or null. */
-export function turnBlocked(r: QueuedRow, machineId: string, branch: string | null, busy: Busy): string | null {
+export function turnBlocked(r: QueuedRow, machineId: string, busy: Busy): string | null {
   if (r.local_model && busy.localModel.has(machineId)) return "Waits for the local models";
-  if (r.push && busy.pushing.has(branchKey(r.repo_remote, branch))) return `Waits for ${branch ?? "its branch"} to be free`;
+  if (r.push && pushBlocked(r.repo_remote, r.branch, busy.pushing)) return `Waits for ${r.branch ?? "the default branch"} to be free`;
   return null;
 }
 
 /** Record a turn just handed out, so the rest of the same claim sees it. */
-export function markBusy(r: QueuedRow, machineId: string, branch: string | null, busy: Busy) {
+export function markBusy(r: QueuedRow, machineId: string, busy: Busy) {
   if (r.local_model) busy.localModel.add(machineId);
-  if (r.push) busy.pushing.add(branchKey(r.repo_remote, branch));
+  if (r.push) busy.pushing.add(r.branch == null ? defaultBranchKey(r.repo_remote) : branchKey(r.repo_remote, r.branch));
 }
 
 // ── Adding, changing and ranking ─────────────────────────────────────
@@ -448,7 +456,7 @@ export async function linedUp(db: Db, userId: string, opts: { next?: number; all
         if (poolFor(m, r.runner).slots <= 0) continue;
         const c = checkoutFor(r, m.offer);
         if ("why" in c) { reasons.add(`${m.name}: ${c.why}`); continue; }
-        const blocked = turnBlocked(r, m.id, c.branch, busy);
+        const blocked = turnBlocked(r, m.id, busy);
         if (blocked) { reasons.add(blocked); continue; }
         canRunOn.push(m.name);
       }

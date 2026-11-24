@@ -891,23 +891,41 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.deepEqual(s2.map((t: any) => t.job.id), [lm2.id]);
     await finish(studio, s2[0]);
 
-    // Two pushing jobs never land on the same repo and branch at once; another branch is fine.
+    // Each machine has a different stale idea of origin's default. The helper resolves the live
+    // default before pushing, so unnamed pushes must still serialize across the two machines.
+    await beat(studio, "studio", { providers: [...hb("x").providers, ollama], tools: ["docker", "database"], checkouts: [
+      { path: "/w/studio/app", remote: appRemote, branch: "main", defaultBranch: "main" },
+      { path: "/w/studio/app-feature", remote: appRemote, branch: "feature", defaultBranch: "main" },
+      { path: "/w/studio/lib", remote: libRemote, branch: "main", defaultBranch: "main" },
+    ] });
+    await beat(laptop, "laptop2", { checkouts: [
+      { path: "/w/laptop2/app", remote: appRemote, branch: "main", defaultBranch: "trunk" },
+      { path: "/w/laptop2/app-feature", remote: appRemote, branch: "feature", defaultBranch: "trunk" },
+      { path: "/w/laptop2/lib", remote: libRemote, branch: "main", defaultBranch: "main" },
+    ] });
+    // Two pushing jobs never land on the same default branch at once. An explicitly different
+    // branch can run only when no unnamed push for that repo is active.
     const p1 = await act("add_to_backlog", { repo: "github.com/example/app", prompt: "Push 1", push: true });
     const p2 = await act("add_to_backlog", { repo: "github.com/example/app", prompt: "Push 2", push: true });
     const pf = await act("add_to_backlog", { repo: "github.com/example/app", prompt: "Push feature", push: true, branch: "feature" });
     const n1 = await act("add_to_backlog", { repo: "github.com/example/app", prompt: "No push" });
     const fromS = (await claimS()).turns, fromL = (await claimL()).turns;
     const got = new Map([...fromS, ...fromL].map((t: any) => [t.job.id, t]));
-    assert.ok(got.has(p1.id) && !got.has(p2.id), "Push 2 waits for main");
-    assert.equal(got.get(pf.id)?.job.checkoutPath.endsWith("/app-feature"), true, "the feature item runs from the feature checkout");
-    assert.equal(got.get(pf.id)?.job.branch, "feature", "the job says which branch it asked to land on");
+    assert.ok(got.has(p1.id) && !got.has(p2.id), "Push 2 waits despite the conflicting cached defaults");
+    assert.ok(!got.has(pf.id), "an explicit branch waits while the live default destination is unknown");
     assert.equal(got.get(p1.id)?.job.branch, undefined, "a job that names no branch lands on the default one");
     assert.ok(got.has(n1.id), "a job that doesn't push isn't held back");
     lu = await act("get_lined_up", {});
-    assert.match(lu.next.find((i: any) => i.id === p2.id).why, /main to be free/);
+    assert.match(lu.next.find((i: any) => i.id === p2.id).why, /default branch to be free/);
     await finish(fromS.includes(got.get(p1.id)) ? studio : laptop, got.get(p1.id));
-    const after = [...(await claimS()).turns, ...(await claimL()).turns];
-    assert.deepEqual(after.map((t: any) => t.job.id), [p2.id], "main is free again");
+    const afterS = (await claimS()).turns, afterL = (await claimL()).turns, after = [...afterS, ...afterL];
+    assert.deepEqual(after.map((t: any) => t.job.id), [p2.id], "the second default push goes next");
+    await finish(afterS.includes(after[0]) ? studio : laptop, after[0]);
+    const featureS = (await claimS()).turns, featureL = (await claimL()).turns, [feature] = [...featureS, ...featureL];
+    assert.equal(feature.job.id, pf.id, "the explicit branch goes once the unknown default destination is free");
+    assert.equal(feature.job.checkoutPath.endsWith("/app-feature"), true, "the feature item runs from the feature checkout");
+    assert.equal(feature.job.branch, "feature", "the job says which branch it asked to land on");
+    await finish(featureS.includes(feature) ? studio : laptop, feature);
   });
 
   test("MCP: lists the same tools", async () => {
