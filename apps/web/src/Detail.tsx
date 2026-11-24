@@ -2,10 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, needsText, providerName, runsOnText, type Need, type Priority, type TreeNode } from "./api.ts";
 import { ANY_MACHINE, keepWhere, whereOptions, whereToJob, type MachineLite, type Where } from "./where.ts";
 import { OTHER_MODEL, modelChoice, modelOptions, type RecentJob } from "./models.ts";
+import { itemPrompt } from "./attended.ts";
 
-export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: {
+export function Detail({ node, path, unattended, attendedKnown, onChanged, onOpenJob, onError, onSelect }: {
   node: TreeNode;
   path: string[];
+  /** An item nothing is working on: opening it opens the new-job form, ready to go. */
+  unattended: boolean;
+  /** Whether the list of what's being worked on has loaded yet. */
+  attendedKnown: boolean;
   onChanged: () => void;
   onOpenJob: (id: string) => void;
   onError: (m: string) => void;
@@ -13,10 +18,18 @@ export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: 
 }) {
   const [editing, setEditing] = useState(false);
   const [starting, setStarting] = useState(false);
+  // The node the form last opened by itself for, so closing it keeps it closed.
+  const [autoOpened, setAutoOpened] = useState<string | null>(null);
   useEffect(() => {
     setEditing(false);
     setStarting(false);
   }, [node.id]);
+  useEffect(() => {
+    // Once per visit, once we know: an unattended item opens straight to the new-job form.
+    if (!attendedKnown || autoOpened === node.id) return;
+    setAutoOpened(node.id);
+    if (unattended) setStarting(true);
+  }, [node.id, unattended, attendedKnown, autoOpened]);
   const patch = async (body: object) => {
     try {
       await api("PATCH", `/api/tree/${node.id}`, body);
@@ -31,6 +44,7 @@ export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: 
       <div className="title-row">
         <h1>{node.title}</h1>
         <span className="kind muted">{node.kind}</span>
+        {unattended && <span className="unattended-tag muted" title="Nothing is working on it.">Unattended</span>}
         <span className="spacer" />
         {node.kind === "project" && (
           <label className="priority muted" title="Higher-priority projects sort first">
@@ -52,7 +66,7 @@ export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: 
       )}
       {!editing && node.notes && <p className="notes">{node.notes}</p>}
       {editing && <EditForm node={node} patch={patch} onArchived={() => onSelect(node.parentId)} />}
-      {starting && <StartJob node={node} onStarted={(id) => { setStarting(false); onChanged(); onOpenJob(id); }} onError={onError} />}
+      {starting && <StartJob key={node.id} node={node} prefill={unattended} onStarted={(id) => { setStarting(false); onChanged(); onOpenJob(id); }} onError={onError} />}
       <RecentJobs nodeId={node.id} onOpenJob={onOpenJob} />
     </header>
   );
@@ -105,8 +119,13 @@ function EditForm({ node, patch, onArchived }: { node: TreeNode; patch: (b: obje
   );
 }
 
-function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id: string) => void; onError: (m: string) => void }) {
-  const [prompt, setPrompt] = useState("");
+/**
+ * The new-job form, the one place a job is picked and started. Opened for an
+ * unattended item (`prefill`), it starts from the item's name and notes, so
+ * picking where it runs, the agent and the model, then Start, is all it takes.
+ */
+function StartJob({ node, prefill, onStarted, onError }: { node: TreeNode; prefill?: boolean; onStarted: (id: string) => void; onError: (m: string) => void }) {
+  const [prompt, setPrompt] = useState(() => (prefill ? itemPrompt(node) : ""));
   const [provider, setProvider] = useState(node.defaultProvider ?? "claude");
   const [model, setModel] = useState(node.defaultModel ?? "");
   const [location, setLocation] = useState(node.defaultLocation ?? "");

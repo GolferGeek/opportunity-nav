@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type TreeNode } from "./api.ts";
+import { isUnattended } from "./attended.ts";
 
 interface Props {
   tree: TreeNode[];
+  /** The nodes something is working on (null while loading). */
+  attended: ReadonlySet<string> | null;
   selected: string | null;
   onSelect: (id: string | null) => void;
   onChanged: () => void;
@@ -11,7 +14,7 @@ interface Props {
 
 const KIND_FOR_CHILD: Record<TreeNode["kind"] | "root", TreeNode["kind"]> = { root: "area", area: "project", project: "item", item: "item" };
 
-export function Nav({ tree, selected, onSelect, onChanged, onError }: Props) {
+export function Nav({ tree, attended, selected, onSelect, onChanged, onError }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
       return new Set(JSON.parse(localStorage.getItem("opnav.collapsed") ?? "[]"));
@@ -99,6 +102,9 @@ export function Nav({ tree, selected, onSelect, onChanged, onError }: Props) {
             <button className="title" onClick={() => onSelect(n.id)} onDoubleClick={() => setRenaming(n.id)} title={n.statusLine ?? undefined}>
               {n.title}
             </button>
+          )}
+          {isUnattended(n, attended) && (
+            <span className="unattended" title="Unattended: nothing is working on it. Click it to start a job." aria-label="Unattended">○</span>
           )}
           <span className="row-actions">
             <button title="Add inside" onClick={() => setAdding(n.id)}>+</button>

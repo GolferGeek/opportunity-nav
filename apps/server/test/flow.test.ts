@@ -108,6 +108,17 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await call("opn_ui_nope", "GET", "/api/tree")).status, 401);
   });
 
+  test("an item is attended while a job started from it is live", async () => {
+    const item = await ok(ui, "POST", "/api/tree", { parentId: projectId, kind: "item", title: "Fix the login page" });
+    assert.ok(!(await ok(ui, "GET", "/api/attended")).includes(item.id), "nothing started from it yet");
+    const job = await ok(ui, "POST", "/api/jobs", { nodeId: item.id, prompt: "Fix the login page" });
+    assert.equal(job.projectId, projectId, "it still runs in the item's project");
+    assert.ok((await ok(ui, "GET", "/api/attended")).includes(item.id));
+    await ok(ui, "POST", `/api/jobs/${job.id}/cancel`);
+    assert.ok(!(await ok(ui, "GET", "/api/attended")).includes(item.id), "a cancelled job leaves it unattended");
+    await ok(ui, "PATCH", `/api/tree/${item.id}`, { archived: true });
+  });
+
   test("job: start → question → answer → resume → done", async () => {
     await ok(node, "POST", "/api/node/heartbeat", hb("laptop"));
     const job = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Add a healthz route" });

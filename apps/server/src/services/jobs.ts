@@ -84,11 +84,11 @@ export async function createJob(sql: Sql, userId: string, input: z.input<typeof 
   return sql.begin(async (tx) => {
     const [job] = await tx`
       insert into jobs (user_id, project_id, title, prompt, provider, model, location, effort, runner, status, node_id, pinned, issue_url, created_by, needs, push,
-                        backlog, app, held, after, local_model, branch, key, position)
+                        backlog, app, held, after, local_model, branch, key, position, item_id)
       values (${userId}, ${project.id}, ${title}, ${j.prompt}, ${provider}, ${j.model ?? (provider === project.defaultProvider ? project.defaultModel : null) ?? null},
               ${location}, ${j.effort ?? null}, ${runner}, 'queued', ${j.machineId ?? null}, ${j.machineId != null}, ${j.issueUrl ?? null}, ${createdBy},
               ${tx.json(needs)}, ${j.push ?? false}, ${j.backlog ?? false}, ${j.app ?? null}, ${j.held ?? false}, ${tx.json(j.after ?? [])},
-              ${j.localModel ?? false}, ${j.branch ?? null}, ${j.key ?? null}, 0)
+              ${j.localModel ?? false}, ${j.branch ?? null}, ${j.key ?? null}, 0, ${j.nodeId})
       returning *`;
     await tx`insert into turns (job_id, kind, status) values (${job!.id}, 'start', 'queued')`;
     if (j.backlog) await placeInApp(tx, userId, job!.id, { top: j.top, before: j.before ?? null });

@@ -89,6 +89,17 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
     }));
 }
 
+/**
+ * The tree nodes something is working on: a queued, running or waiting job was
+ * started from them. Every other item is unattended, and clicking it opens the
+ * new-job form. Jobs from before jobs remembered their item count for no item.
+ */
+export async function attended(db: Db, userId: string): Promise<string[]> {
+  const rows = await db`select distinct item_id from jobs
+    where user_id = ${userId} and item_id is not null and status in ('queued', 'running', 'waiting')`;
+  return rows.map((r) => r.item_id as string);
+}
+
 /** The newest activity line, so a running item says what it's doing right now. */
 function lastActivity(detail: any): string | null {
   const a = detail?.activity;

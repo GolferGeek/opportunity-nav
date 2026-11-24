@@ -22,7 +22,7 @@ import { HttpError } from "./errors.ts";
 import { heartbeat, ingestExternal, ingestUsage, listMachines, machineForToken, setTakingJobs } from "./services/machines.ts";
 import { answerQuestion, cancelJob, claim, createJob, getJob, jobRow, NewJob, recordEvents, renewLease, startPublishing } from "./services/jobs.ts";
 import { createNode, listTree, NewTreeNode, TreeNodePatch, updateNode } from "./services/tree.ts";
-import { dashboard, happening } from "./services/views.ts";
+import { attended, dashboard, happening } from "./services/views.ts";
 import { runAction } from "./services/actions.ts";
 import { linedUp } from "./services/backlog.ts";
 import { agentCard, handleA2A } from "./a2a.ts";
@@ -119,6 +119,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       return u;
     });
     r.get("/api/tree", async (req) => listTree(sql, req.principal.userId));
+    r.get("/api/attended", async (req) => attended(sql, req.principal.userId));
     r.post("/api/tree", async (req) => createNode(sql, req.principal.userId, NewTreeNode.parse(req.body)));
     r.patch("/api/tree/:id", async (req) => updateNode(sql, req.principal.userId, id(req), TreeNodePatch.parse(req.body)));
     r.get("/api/happening", async (req) => {

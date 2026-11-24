@@ -10,6 +10,7 @@ import { Ask } from "./Ask.tsx";
 import { ExternalPanel } from "./External.tsx";
 import { SubscriptionPanel } from "./Subscription.tsx";
 import { ClaudePanel } from "./ClaudePanel.tsx";
+import { isUnattended } from "./attended.ts";
 
 export function App() {
   if (!token()) return <SignedOut />;
@@ -26,6 +27,9 @@ function Home() {
   const [selected, setSelected] = useState<string | null>(readSelection);
   const happening = usePoll<Group[]>(selected ? `/api/happening?scope=${selected}` : "/api/happening", 5000);
   const dash = usePoll<Dash>("/api/dashboard", 15_000);
+  // The tree nodes something is working on; every other item is unattended.
+  const attendedPoll = usePoll<string[]>("/api/attended", 15_000);
+  const attended = useMemo(() => (attendedPoll.data ? new Set(attendedPoll.data) : null), [attendedPoll.data]);
   const [job, setJobState] = useState<string | null>(null);
   const [external, setExternalState] = useState<string | null>(null);
   const [sub, setSubState] = useState<string | null>(null);
@@ -70,20 +74,21 @@ function Home() {
     return out;
   }, [byId]);
   const path = useMemo(() => (node ? pathOf(node.id) : []), [node, pathOf]);
-  const refresh = useCallback(() => { void tree.reload(); void happening.reload(); void dash.reload(); }, [tree.reload, happening.reload, dash.reload]);
+  const refresh = useCallback(() => { void tree.reload(); void happening.reload(); void dash.reload(); void attendedPoll.reload(); },
+    [tree.reload, happening.reload, dash.reload, attendedPoll.reload]);
 
   if (tree.error && /sign in/i.test(tree.error)) return <SignedOut expired />;
 
   return (
     <div className={`app ${claude ? "with-claude" : ""}`}>
-      <Nav tree={tree.data ?? []} selected={selected} onSelect={select} onChanged={refresh} onError={setToast} />
+      <Nav tree={tree.data ?? []} attended={attended} selected={selected} onSelect={select} onChanged={refresh} onError={setToast} />
       <main>
         <div className="topbar">
           <Ask scope={node ? { id: node.id, path } : null} onSend={(t) => { setClaude(true); setPendingAsk(t); }} />
           <button className={claude ? "on-toggle" : ""} onClick={() => setClaude(!claude)} title="Talk to Claude (⌘J)">Claude</button>
           <button className="quietbtn" onClick={() => setSettings(true)}>Settings</button>
         </div>
-        {node && <Detail node={node} path={path} onChanged={refresh} onOpenJob={setJob} onError={setToast} onSelect={select} />}
+        {node && <Detail node={node} path={path} unattended={isUnattended(node, attended)} attendedKnown={attended != null} onChanged={refresh} onOpenJob={setJob} onError={setToast} onSelect={select} />}
         <div className="panes">
           <Happening groups={happening.data} onChanged={refresh} onOpenJob={setJob} onOpenExternal={setExternal} onSelect={select} onError={setToast} />
           <Dashboard dash={dash.data} onChanged={refresh} onSelect={select} onOpenSub={setSub} onOpenJob={setJob} onError={setToast} />
