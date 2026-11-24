@@ -119,17 +119,23 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
   const [claudeCloud, setClaudeCloud] = useState(false);
   useEffect(() => {
     let live = true;
-    void api<any[]>("GET", "/api/machines").then((ms) => {
+    setClaudeCloud(false);
+    // The job runs in the node's project (an item's nearest project above it), as the server resolves it.
+    void Promise.all([api<any[]>("GET", "/api/machines"), api<TreeNode[]>("GET", "/api/tree")]).then(([ms, tree]) => {
       if (!live) return;
+      const byId = new Map(tree.map((n) => [n.id, n]));
+      let project: TreeNode | undefined = byId.get(node.id) ?? node;
+      while (project && project.kind !== "project") project = project.parentId ? byId.get(project.parentId) : undefined;
+      const repo = project?.repoRemote ?? null;
       setCloudroom([...new Set(ms.filter((m) => m.online && m.cloudroom).flatMap((m) => m.cloudroom.providers as string[]))]);
-      // Only a routine that covers this project's repo can run it (the server matches the same way).
-      setClaudeCloud(ms.some((m) => m.online && m.claudeCloud?.ready && (!node.repoRemote || (m.claudeCloud.repos ?? []).includes(node.repoRemote))));
+      // Only a routine that covers the project's repo can run it (the server matches the same way).
+      setClaudeCloud(ms.some((m) => m.online && m.claudeCloud?.ready && repo !== null && (m.claudeCloud.repos ?? []).includes(repo)));
     }).catch(() => {});
     return () => { live = false; };
-  }, [node.repoRemote]);
+  }, [node.id, node.repoRemote]);
   useEffect(() => {
-    if (runner === "cloudroom" && !cloudroom.includes(provider) || runner === "claude-cloud" && provider !== "claude") setRunner("direct");
-  }, [provider, cloudroom, runner]);
+    if (runner === "cloudroom" && !cloudroom.includes(provider) || runner === "claude-cloud" && (provider !== "claude" || !claudeCloud)) setRunner("direct");
+  }, [provider, cloudroom, claudeCloud, runner]);
   const inCloud = runner !== "direct";
   const go = async () => {
     if (!prompt.trim()) return;
