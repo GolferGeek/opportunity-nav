@@ -38,3 +38,25 @@ export function readingNote(s: { status: string; message: string | null; fetched
 
 /** The card's look: one whose good reading has gone old looks like a stale one. */
 export const readingClass = (s: { status: string; current?: boolean }) => `status-${s.status === "ok" && s.current === false ? "stale" : s.status}`;
+
+type CardWindow = { id: string; unit: string; percent: number | null };
+
+/** Antigravity reports quota groups as `<group>:<bucket>`; the Claude and GPT groups are allowances for those models only. */
+const otherModels = (w: { id: string }) => /claude|gpt/i.test(w.id.split(":")[0] ?? "");
+
+/**
+ * The limit rows a subscription card shows. Antigravity's Gemini windows lead;
+ * its Claude and GPT allowance rows stay hidden until some of them is used,
+ * as Omarchy's gauge does.
+ */
+export function cardWindows<W extends CardWindow>(provider: string, windows: readonly W[]): W[] {
+  const limits = windows.filter((w) => w.unit !== "tokens");
+  if (provider !== "agy") return limits;
+  return [...limits.filter((w) => !otherModels(w)), ...limits.filter((w) => otherModels(w) && (w.percent ?? 0) > 0)];
+}
+
+/** The quiet line a good Antigravity card shows when Google names no Gemini limit, or null. */
+export function cardEmptyNote(s: { provider: string; status: string; windows: readonly CardWindow[] }): string | null {
+  if (s.provider !== "agy" || s.status !== "ok" || s.windows.some((w) => w.unit !== "tokens" && !otherModels(w))) return null;
+  return cardWindows(s.provider, s.windows).length ? "Google reports no Gemini limit." : "Google reports no Gemini limit.\nClaude and GPT allowance unused.";
+}

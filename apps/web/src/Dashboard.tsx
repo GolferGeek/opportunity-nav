@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ago, api, providerName, until } from "./api.ts";
-import { readingClass, readingNote } from "./labels.ts";
+import { cardEmptyNote, cardWindows, readingClass, readingNote } from "./labels.ts";
 import { LinedUp } from "./LinedUp.tsx";
 
 export interface Dash {
@@ -46,7 +46,8 @@ export function Dashboard({ dash, onChanged, onSelect, onOpenSub, onOpenJob, onE
               <Cost id={s.id} value={s.monthlyCostUsd} onChanged={onChanged} onError={onError} />
             </div>
             {readingNote(s) && <div className="sub-status" title={s.message ?? undefined}>{readingNote(s)}</div>}
-            {s.windows.filter((w) => w.unit !== "tokens").map((w) => {
+            {cardEmptyNote(s) && <div className="detail">{cardEmptyNote(s)}</div>}
+            {cardWindows(s.provider, s.windows).map((w) => {
               const pct = w.percent == null ? null : Math.min(100, Math.max(0, w.percent));
               return (
                 <div key={w.id} className="meter" title={`${pct == null ? `${w.used} ${w.unit}` : `${pct.toFixed(1)}% used`}${s.fetchedAt ? ` · checked ${ago(s.fetchedAt)}` : ""}`}>

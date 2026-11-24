@@ -362,3 +362,30 @@ test("a machine reports Docker and a database only when they answer, or what its
   assert.deepEqual(await machineTools(sys({ OPNAV_MACHINE_TOOLS: "none" })), []);
   assert.deepEqual(await machineTools(sys({ OPNAV_MACHINE_TOOLS: "docker, database" })), ["docker", "database"]);
 });
+
+test("Antigravity keeps Google's Gemini group and its Claude and GPT allowance apart", async () => {
+  const { agy } = await import("../src/usage/agy.ts");
+  // The shape Google answered on 2026-11-23, plus a Gemini group.
+  const quota = { groups: [
+    { displayName: "Claude and GPT models", buckets: [
+      { bucketId: "3p-weekly", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2099-01-08T00:00:00Z", remainingFraction: 1 },
+      { bucketId: "3p-5h", displayName: "Five Hour Limit Remaining", window: "5h", resetTime: "2099-01-01T05:00:00Z", remainingFraction: 1 },
+    ] },
+    { displayName: "Gemini models", buckets: [
+      { bucketId: "gemini-5h", window: "5h", resetTime: "2099-01-01T05:00:00Z", remainingFraction: 0.75 },
+      { bucketId: "gemini-weekly", window: "weekly", resetTime: "2099-01-08T00:00:00Z", remainingFraction: 0.4 },
+    ] },
+  ] };
+  const answer = (body: object) => async (input: string | URL | Request) =>
+    Response.json(String(input).endsWith("loadCodeAssist") ? { cloudaicompanionProject: "p" } : body);
+  const read = (body: object) => agy.read({ sys: system({ home: "/nowhere", env: {} }), fetch: answer(body) as typeof fetch }, { id: "a@example.com", token: "t" });
+  const windows = (await read(quota)).windows;
+  assert.deepEqual(windows.map(w => [w.id, w.kind, Math.round(w.used)]), [
+    ["Claude and GPT models:3p-weekly", "weekly", 0], ["Claude and GPT models:3p-5h", "session", 0],
+    ["Gemini models:gemini-5h", "session", 25], ["Gemini models:gemini-weekly", "weekly", 60],
+  ]);
+  assert.deepEqual(windows.slice(2).map(w => w.label), ["Gemini models 5-hour", "Gemini models weekly"]);
+  // An answer that lists buckets without groups lists the Gemini ones.
+  const bare = (await read({ buckets: quota.groups[1]!.buckets })).windows;
+  assert.deepEqual(bare.map(w => w.id), ["Gemini:gemini-5h", "Gemini:gemini-weekly"]);
+});

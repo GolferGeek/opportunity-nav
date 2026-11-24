@@ -220,6 +220,17 @@ function freeOrWhy(machines: MachineView[], provider: string, want: { remote: st
   return { ids: free.map((m) => m.id), capable };
 }
 
+/**
+ * An agent's usage left from its account's reading. The stand-in
+ * (ASSUMED_LEFT) is used only when there is no reading at all, so a real
+ * Gemini reading always counts, current or not.
+ */
+export function usageLeft(provider: string, account: AccountReading | null): Pick<Candidate, "provider" | "left" | "stale" | "assumed"> {
+  if (account?.left != null) return { provider, left: account.left, stale: account.stale };
+  const assumed = ASSUMED_LEFT[provider];
+  return assumed != null ? { provider, left: assumed, assumed: true } : { provider, left: null, stale: account?.stale };
+}
+
 export async function pickReviewer(db: Db, userId: string, among: readonly string[], want: { remote: string; needs: string[]; machineId?: string }) {
   const [accounts, all0] = await Promise.all([accountReadings(db, userId, among), listMachines(db, userId)]);
   // A review runs on the machine itself, so only its local slots count.
@@ -227,11 +238,7 @@ export async function pickReviewer(db: Db, userId: string, among: readonly strin
   const all: Candidate[] = among.map((provider) => {
     const free = freeMachines(machines, provider, want);
     const best = bestMachine(accounts.get(provider) ?? { accounts: [], byMachine: new Map() }, free.ids, free.capable);
-    const assumed = best.account?.left == null && ASSUMED_LEFT[provider] != null;
-    return {
-      provider, left: assumed ? ASSUMED_LEFT[provider]! : best.account?.left ?? null, stale: assumed ? undefined : best.account?.stale,
-      cantRun: free.why, machineId: best.machineId, ...(assumed ? { assumed } : {}),
-    };
+    return { ...usageLeft(provider, best.account), cantRun: free.why, machineId: best.machineId };
   });
   const picked = rankReviewers(all);
   if (!picked) {

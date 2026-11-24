@@ -38,6 +38,12 @@ So Opportunity Nav needs a **small usage reporter on each machine** where the ag
 
 Gemini CLI isn't read any more: personal Google accounts moved to Antigravity (`agy`).
 
+Antigravity's answer is a list of groups (`<group>:<bucket>` in window ids). A group named Gemini holds the plan's own 5-hour and weekly limits; "Claude and GPT models" (`3p-5h`, `3p-weekly`) limits only those models.
+As of 2026-11-23 Google sends Matt's account no Gemini group at all, only the Claude and GPT one (checked on the Studio and Omarchy).
+Omarchy's gauge then shows that first group as "Session" and "Weekly"; Opportunity Nav doesn't pretend it's Gemini.
+The card leads with Gemini rows when Google sends them, hides the Claude and GPT rows while they're unused, and says when there's no Gemini limit.
+The review picker counts a Gemini reading when there is one; only with none does Antigravity count as half left.
+
 ### One card per account
 
 Each card is keyed on the account itself (its id or email), never on a sign-in, so every machine signed in to the same account reports the same card.

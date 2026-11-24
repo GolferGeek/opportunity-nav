@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { accountLeft, ASSUMED_LEFT, bestMachine, freeMachines, pickReason, rankReviewers, staleText, type AccountReading, type MachineView } from "../src/services/reviewer.ts";
+import { accountLeft, ASSUMED_LEFT, bestMachine, freeMachines, pickReason, rankReviewers, staleText, usageLeft, type AccountReading, type MachineView } from "../src/services/reviewer.ts";
 
 const now = Date.parse("2026-11-23T12:00:00Z");
 const later = "2026-11-24T12:00:00Z", earlier = "2026-11-22T12:00:00Z";
@@ -164,5 +164,35 @@ describe("accounts and machines", () => {
     assert.equal(freeMachines([m("a")], "agy", want).why, "no online machine can run it");
     assert.equal(freeMachines([m("a", { checkouts: [] })], "codex", want).why, "no machine that runs it has this repo");
     assert.equal(freeMachines([m("a")], "codex", { ...want, needs: ["docker", "database"] }).why, "no machine that runs it has docker and database");
+  });
+});
+
+describe("Antigravity's Gemini reading in the picker", () => {
+  const claude = [
+    { window_id: "Claude and GPT models:3p-weekly", unit: "percent", used: 0, resets_at: later },
+    { window_id: "Claude and GPT models:3p-5h", unit: "percent", used: 0, resets_at: later },
+  ];
+  const gemini = [
+    { window_id: "Gemini models:gemini-5h", unit: "percent", used: 25, resets_at: later },
+    { window_id: "Gemini models:gemini-weekly", unit: "percent", used: 85, resets_at: later },
+  ];
+  const pick = (windows: typeof claude, stale?: string) => {
+    const r = { accounts: [{ id: "s1", left: accountLeft(windows, now, "agy"), stale }], byMachine: new Map([["m1", "s1"]]) };
+    return usageLeft("agy", bestMachine(r, ["m1"], ["m1"]).account);
+  };
+  test("a real Gemini reading counts, not the stand-in", () => {
+    assert.deepEqual(pick([...claude, ...gemini]), { provider: "agy", left: 15, stale: undefined });
+    assert.equal(rankReviewers([{ ...pick([...claude, ...gemini]) }, { provider: "codex", left: 30 }])!.provider, "codex",
+      "15% Gemini left loses to Codex at 30%, where half left would have won");
+  });
+  test("a Gemini reading that isn't current still counts, marked so", () => {
+    assert.deepEqual(pick(gemini, "read 3 h ago"), { provider: "agy", left: 15, stale: "read 3 h ago" });
+  });
+  test("only the Claude and GPT allowance: the stand-in", () => {
+    assert.deepEqual(pick(claude), { provider: "agy", left: ASSUMED_LEFT.agy, assumed: true });
+    assert.deepEqual(usageLeft("agy", null), { provider: "agy", left: ASSUMED_LEFT.agy, assumed: true });
+  });
+  test("other agents with no reading have none", () => {
+    assert.deepEqual(usageLeft("codex", null), { provider: "codex", left: null, stale: undefined });
   });
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { projectLabel, readingClass, readingNote } from "../src/labels.ts";
+import { cardEmptyNote, cardWindows, projectLabel, readingClass, readingNote } from "../src/labels.ts";
 
 test("a handoff's project label is its path below the top area", () => {
   assert.equal(projectLabel("p1", ["Coding", "Orchestrator AI", "Agents Only"]), "Orchestrator AI / Agents Only");
@@ -30,4 +30,19 @@ test("a card whose reading isn't current says so, with its age", () => {
   assert.equal(readingNote(card({ status: "unavailable", current: false }), now), "No limits to show");
   assert.equal(readingClass(card({ current: false })), "status-stale");
   assert.equal(readingClass(card({ status: "auth_required", current: false })), "status-auth_required");
+});
+
+test("Antigravity's card leads with Gemini and hides unused Claude and GPT rows", () => {
+  const w = (id: string, percent: number | null) => ({ id, unit: "percent", percent });
+  const claude = [w("Claude and GPT models:3p-weekly", 0), w("Claude and GPT models:3p-5h", 0)];
+  const gemini = [w("Gemini models:gemini-5h", 25), w("Gemini models:gemini-weekly", 60)];
+  const ids = (ws: { id: string }[]) => ws.map((x) => x.id);
+  assert.deepEqual(ids(cardWindows("agy", [...claude, ...gemini])), ids(gemini));
+  assert.deepEqual(ids(cardWindows("agy", [w("Claude and GPT models:3p-5h", 12), ...gemini])), [...ids(gemini), "Claude and GPT models:3p-5h"]);
+  assert.deepEqual(ids(cardWindows("codex", [w("5h", 0), { id: "day", unit: "tokens", percent: null }])), ["5h"], "other agents show every limit");
+  assert.equal(cardEmptyNote({ provider: "agy", status: "ok", windows: [...claude, ...gemini] }), null);
+  assert.equal(cardEmptyNote({ provider: "agy", status: "ok", windows: claude }), "Google reports no Gemini limit.\nClaude and GPT allowance unused.");
+  assert.equal(cardEmptyNote({ provider: "agy", status: "ok", windows: [w("Claude and GPT models:3p-5h", 5)] }), "Google reports no Gemini limit.");
+  assert.equal(cardEmptyNote({ provider: "agy", status: "stale", windows: claude }), null, "a stale card has its own note");
+  assert.equal(cardEmptyNote({ provider: "codex", status: "ok", windows: [] }), null);
 });
