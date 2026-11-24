@@ -141,8 +141,12 @@ const EventBase = z.object({
 });
 
 export const JobEvent = z.discriminatedUnion("type", [
-  /** Provider session id became known (send as soon as it is). */
-  EventBase.extend({ type: z.literal("session"), providerSessionId: z.string() }),
+  /**
+   * Provider session id became known (send as soon as it is). `model` = the model the agent
+   * says it's running, when it says (Claude's init line), or the one it was started with;
+   * send the event again with the same session id when only the model is new.
+   */
+  EventBase.extend({ type: z.literal("session"), providerSessionId: z.string(), model: z.string().min(1).optional() }),
   /** Short human-readable progress line ("Running tests"). Keep it plain. */
   EventBase.extend({ type: z.literal("progress"), text: z.string() }),
   /**
@@ -178,3 +182,33 @@ export const JobEventsRequest = z.object({
 export type JobEventsRequest = z.infer<typeof JobEventsRequest>;
 
 export const TerminalEventTypes = ["needs_input", "result", "error"] as const;
+
+/** What a job card says about how a job runs: the model in plain words, and where it runs. */
+export interface RunsOn {
+  /** e.g. "claude-opus-4-5", "gpt-5 codex", "gemini-3-pro via agy", "qwen3 via Ollama", or "default model". */
+  model: string;
+  /** "local on <machine>", "local" (no machine yet), or "cloud (Cloudroom)" / "cloud (Claude)". */
+  where: string;
+}
+
+const CLOUD_RUNNERS: Record<string, string> = { cloudroom: "Cloudroom", "claude-cloud": "Claude" };
+const VIA: Record<string, string> = { agy: "agy", ollama: "Ollama", mlx: "MLX", cursor: "Cursor", grokbot: "Grok Bot" };
+
+/**
+ * The model a job uses, in plain words: the one the agent reported, else the one it was
+ * started with, else "default model" (never a guess at the provider's default).
+ */
+export function modelLabel(provider: string, model?: string | null): string {
+  const m = model?.trim().replace(/-\d{8}$/, ""); // claude-opus-4-5-20251101 → claude-opus-4-5
+  if (!m) return "default model";
+  if (provider === "claude") return /^(opus|sonnet|haiku)\b/i.test(m) ? `claude-${m.toLowerCase()}` : m;
+  if (provider === "codex") return /codex/i.test(m) ? m : `${m} codex`;
+  return VIA[provider] ? `${m} via ${VIA[provider]}` : m;
+}
+
+/** Where a job runs: on a machine (the node runs the agent there) or in a cloud the node hands it to. */
+export function runsOn(job: { provider: string; model?: string | null; reportedModel?: string | null; runner?: string | null; machine?: string | null }): RunsOn {
+  const cloud = CLOUD_RUNNERS[job.runner ?? "direct"];
+  const where = cloud ? `cloud (${cloud})` : job.runner && job.runner !== "direct" ? "cloud" : job.machine ? `local on ${job.machine}` : "local";
+  return { model: modelLabel(job.provider, job.reportedModel || job.model), where };
+}

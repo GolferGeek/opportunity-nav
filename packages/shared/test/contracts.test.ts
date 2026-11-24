@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ClaimRequest, JobEvent, NODE, NodeHeartbeat, PublishResponse, readingIsCurrent, Runner, runsInCloud, UsageReport } from "../src/index.ts";
+import { ClaimRequest, JobEvent, modelLabel, NODE, NodeHeartbeat, PublishResponse, readingIsCurrent, Runner, runsInCloud, runsOn, UsageReport } from "../src/index.ts";
 
 test("usage report rejects a token-shaped account key", () => {
   const r = UsageReport.safeParse({
@@ -66,4 +66,31 @@ test("a checkout says whether it's a linked worktree and what origin's default b
   assert.equal(hb.checkouts[0]!.linked, true);
   assert.equal(hb.checkouts[0]!.defaultBranch, "main");
   assert.equal(hb.checkouts[1]!.linked, undefined);
+});
+
+test("a session event may say which model the agent runs; older events without it still parse", () => {
+  const at = new Date().toISOString();
+  const e = JobEvent.parse({ type: "session", seq: 0, at, providerSessionId: "s", model: "claude-opus-4-5-20251101" });
+  assert.equal(e.type === "session" && e.model, "claude-opus-4-5-20251101");
+  assert.equal(JobEvent.safeParse({ type: "session", seq: 0, at, providerSessionId: "s" }).success, true);
+  assert.equal(JobEvent.safeParse({ type: "session", seq: 0, at, providerSessionId: "s", model: "" }).success, false);
+});
+
+test("a job's model reads in plain words, and unknown says default model", () => {
+  assert.equal(modelLabel("claude", "claude-opus-4-5-20251101"), "claude-opus-4-5");
+  assert.equal(modelLabel("claude", "opus"), "claude-opus");
+  assert.equal(modelLabel("codex", "gpt-5"), "gpt-5 codex");
+  assert.equal(modelLabel("codex", "gpt-5.1-codex-max"), "gpt-5.1-codex-max");
+  assert.equal(modelLabel("agy", "gemini-3-pro"), "gemini-3-pro via agy");
+  assert.equal(modelLabel("ollama", "qwen3:8b"), "qwen3:8b via Ollama");
+  assert.equal(modelLabel("codex", null), "default model");
+  assert.equal(modelLabel("claude", " "), "default model");
+});
+
+test("runsOn prefers the reported model and says local on the machine, or which cloud", () => {
+  assert.deepEqual(runsOn({ provider: "claude", model: "opus", reportedModel: "claude-opus-4-5-20251101", runner: "direct", machine: "Studio" }),
+    { model: "claude-opus-4-5", where: "local on Studio" });
+  assert.deepEqual(runsOn({ provider: "codex", runner: "direct", machine: null }), { model: "default model", where: "local" });
+  assert.deepEqual(runsOn({ provider: "claude", runner: "claude-cloud", machine: "Studio" }), { model: "default model", where: "cloud (Claude)" });
+  assert.deepEqual(runsOn({ provider: "codex", model: "gpt-5", runner: "cloudroom", machine: "Omarchy" }), { model: "gpt-5 codex", where: "cloud (Cloudroom)" });
 });
