@@ -161,8 +161,8 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
         const routine = turn.job.runner === "claude-cloud" && claudeCloud.ready ? claudeCloud.config : undefined;
         // A turn this machine can't run is left alone; its lease runs out and it goes back in the queue.
         if (!(turn.job.runner === "claude-cloud" ? routine : cloud ? cloudroom?.providers.includes(turn.job.provider) : provider)) continue;
-        const run = runTurn(post, turn, signal, report, async (lifetime, emit) => {
-          if (routine) return runClaudeCloud(sys, routine, turn, lifetime, emit, { fetch: transport });
+        const run = runTurn(post, turn, signal, report, async (lifetime, emit, publish) => {
+          if (routine) return runClaudeCloud(sys, routine, turn, lifetime, emit, { fetch: transport, publish });
           if (cloud) return runCloudroom(sys, cloudroom!.binary, turn, lifetime, emit,
             { email: cloudroom!.email, defaultModel: cloudroom!.models[turn.job.provider] });
           if (!provider!.locations.includes(turn.job.location)) {
@@ -170,7 +170,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
           }
           return provider!.provider === "ollama"
             ? runOllama(sys, transport, provider!.models, turn, lifetime)
-            : runWorker(sys, provider!.cliPath!, turn, lifetime, emit, autonomy);
+            : runWorker(sys, provider!.cliPath!, turn, lifetime, emit, autonomy, publish);
         }).catch(() => {
           if (!signal.aborted) report("A job stopped unexpectedly.");
         }).finally(() => {

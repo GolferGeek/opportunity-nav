@@ -71,9 +71,14 @@ Coding jobs run in a separate Git worktree on branch `opnav/<first 8 characters 
 
 A job started with `push` (a handoff brief with `push: true` does this) lands its work instead:
 - Its worktree starts from the checkout's branch on origin, e.g. `main`.
-- When it succeeds, the helper pushes it there. If origin moved on, it rebases first.
+- When it succeeds, the helper asks the server first, then pushes it there.
+- If origin moved on, it replays the job's commits on top (Git 2.44 or later), on a temporary ref: `opnav/<id>` itself is never rewritten, so a retry checks the same commits and knows when its earlier push already landed.
 - If that conflicts or the push is refused, it pushes `opnav/<id>` instead, and the job's last progress line says so.
 - It pushes only that one branch: never tags, never a submodule's commits, whatever the machine's Git settings say.
+
+Stop vs push: the server decides, under the job's lock.
+- A Stop accepted before the helper asks to push wins: nothing is pushed, and the job ends cancelled even if its result comes in after.
+- Once the server has said "push", the push wins: Stop is refused for that turn (it answers `publishing`), and the result stands.
 
 A job runs only in a checkout whose origin is the project's repo, as Git will really reach it (after any `insteadOf` or `pushInsteadOf` rewrite).
 If it isn't, the job ends at once and says why. A pushing job checks again right before it pushes, and fetches and pushes only the addresses it checked.

@@ -22,6 +22,15 @@ export const needsInputInstruction = [
 
 export type Autonomy = "edit" | "full";
 
+/**
+ * Ask the server whether a finished turn may push (lease.ts). A cancel the server accepted first
+ * wins; once it says yes, publishing wins over a later cancel. `why` finishes "Not pushed: ...".
+ */
+export type Publish = () => Promise<{ ok: true } | { ok: false; why: string }>;
+
+/** For running a worker outside a lease (tests, a one-off run): nothing to ask, so it may publish. */
+export const publishFreely: Publish = async () => ({ ok: true });
+
 const agentNames: Partial<Record<string, string>> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
 
 export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbox = false): string[] {
@@ -151,7 +160,7 @@ export function errorEvent(details: string, crashed = false, reason?: string): T
 }
 
 export async function runWorker(sys: System, binary: string, turn: Turn, signal: AbortSignal,
-  emit: (event: EventContent) => void, autonomy: Autonomy = "edit"): Promise<Terminal> {
+  emit: (event: EventContent) => void, autonomy: Autonomy = "edit", publish: Publish = publishFreely): Promise<Terminal> {
   if (turn.job.location !== "cloud") {
     return { type: "error", code: "provider_error", message: "This worker only runs cloud models.", retryable: false };
   }
@@ -178,20 +187,26 @@ export async function runWorker(sys: System, binary: string, turn: Turn, signal:
           return false;
         });
     }
-    await land(worktree, turn, outcome, committed, signal, emit);
+    await land(worktree, turn, outcome, committed, signal, emit, publish);
     return outcome;
   } finally {
     await worktree.release();
   }
 }
 
-/** A pushing job lands its work only when it's done, not when it stops to ask. */
+/**
+ * A pushing job lands its work only when it's done, not when it stops to ask, and only after the
+ * server says it may (a cancel it accepted first means no push).
+ */
 export async function land(worktree: { branch: string; push(signal?: AbortSignal): Promise<string> }, turn: Turn,
-  outcome: Terminal, committed: boolean, signal: AbortSignal, emit: (event: EventContent) => void) {
+  outcome: Terminal, committed: boolean, signal: AbortSignal, emit: (event: EventContent) => void, publish: Publish) {
   if (!turn.job.push || outcome.type !== "result") return;
+  const kept = `The work is on branch ${worktree.branch} on this machine.`;
   const held = pushHold(outcome.summary, committed, signal);
-  emit({ type: "progress", text: held ? `Not pushed: ${held} The work is on branch ${worktree.branch} on this machine.`
-    : await worktree.push(signal) });
+  if (held) return emit({ type: "progress", text: `Not pushed: ${held} ${kept}` });
+  const go = await publish();
+  if (!go.ok) return emit({ type: "progress", text: `Not pushed: ${go.why} ${kept}` });
+  emit({ type: "progress", text: await worktree.push(signal) });
 }
 
 async function runInWorktree(sys: System, binary: string, turn: Turn, signal: AbortSignal,

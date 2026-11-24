@@ -23,6 +23,12 @@ interface WorktreeRecord {
   /** For a pushing job: origin's fetch and push addresses, checked against repo when it started. Git fetches and pushes only these. */
   fetchUrl?: string;
   pushUrl?: string;
+  /**
+   * For a pushing job whose work was replayed onto a newer origin: the job branch's tip it replayed
+   * and the commit that came of it, saved before that commit is pushed. The job's own branch is never
+   * rewritten, so a retry still sees only its own commits, and knows its earlier push when origin has it.
+   */
+  landed?: { tip: string; commit: string };
 }
 
 export class WorktreeError extends Error {}
@@ -99,8 +105,11 @@ async function recordAt(path: string): Promise<WorktreeRecord> {
   }
   const start = typeof record.start === "string" && /^[a-f0-9]{40,64}$/.test(record.start) ? record.start : undefined;
   const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
+  const sha = (value: unknown) => typeof value === "string" && /^[a-f0-9]{40,64}$/.test(value) ? value : undefined;
+  const landed = record.landed && sha(record.landed.tip) && sha(record.landed.commit)
+    ? { tip: record.landed.tip, commit: record.landed.commit } : undefined;
   return { jobId: record.jobId, checkout: record.checkout, baseRef: record.baseRef, createdAt: record.createdAt, start,
-    repo: text(record.repo), fetchUrl: text(record.fetchUrl), pushUrl: text(record.pushUrl) };
+    repo: text(record.repo), fetchUrl: text(record.fetchUrl), pushUrl: text(record.pushUrl), ...(landed ? { landed } : {}) };
 }
 
 async function registered(sys: System, checkout: string, path: string, branch: string) {
@@ -214,10 +223,14 @@ async function prepare(sys: System, job: JobSpec, checkout: string, id: string, 
     }
     await git(sys, checkout, "worktree", "lock", path);
   }
-  const landing = saved;
+  let landing = saved;
   const fetchUrl = checked?.fetchUrl ?? saved.fetchUrl;
+  const remember = async (landed: { tip: string; commit: string }) => {
+    landing = { ...landing, landed };
+    await writeFile(metadata, JSON.stringify(landing), { mode: 0o600 });
+  };
   return { path, branch, commit: (message: string) => commitLeftovers(sys, path, message, branch),
-    push: (signal?: AbortSignal) => oneAtATime(checkout, () => pushWork(sys, path, landing, branch, signal)),
+    push: (signal?: AbortSignal) => oneAtATime(checkout, () => pushWork(sys, path, landing, branch, signal, remember)),
     /** The branch it lands on and the commit it started from on origin, when it started there. */
     landing: landing.start ? { base: landingBranch(landing.baseRef), start: landing.start } : undefined,
     /** A branch's commit on origin (at the checked address), or undefined when origin hasn't got it. */
@@ -395,12 +408,17 @@ export function gitReason(error: unknown): string {
  * Only the job's own commits leave this machine: the ones on its branch since the
  * commit it started from on origin. It pushes that branch's tip by commit ID, never
  * whatever happens to be checked out. Fast-forward when origin hasn't moved; replay
- * the job's commits onto origin when it has. If that conflicts or the push is refused,
- * push the job's own branch instead. Returns one plain line saying what happened.
+ * the job's commits onto origin when it has, on a temporary ref, so the job's own
+ * branch (and the commit it started from) stay as they were and a retry checks the
+ * same commits again. If that conflicts or the push is refused, push the job's own
+ * branch instead. Returns one plain line saying what happened.
+ *
+ * remember saves a replayed commit before it's pushed, so a retry after an interrupted
+ * push knows the work is already on origin when origin has that commit.
  */
 export async function pushWork(sys: System, path: string,
-  record: Pick<WorktreeRecord, "baseRef" | "start" | "repo" | "fetchUrl" | "pushUrl">,
-  branch: string, signal?: AbortSignal): Promise<string> {
+  record: Pick<WorktreeRecord, "baseRef" | "start" | "repo" | "fetchUrl" | "pushUrl" | "landed">,
+  branch: string, signal?: AbortSignal, remember?: (landed: { tip: string; commit: string }) => Promise<void>): Promise<string> {
   const kept = `The work is on branch ${branch} on this machine.`;
   const cancelled = `Not pushed: the job was cancelled. ${kept}`;
   if (signal?.aborted) return cancelled;
@@ -421,6 +439,33 @@ export async function pushWork(sys: System, path: string,
   // The branch must still grow from where the job started, or its history isn't the job's.
   if (!await ancestor(start, tip)) return `Not pushed: branch ${branch} no longer builds on ${base} from origin. ${kept}`;
   if (tip === start) return `Nothing new to push: the job made no commits.`;
+  // Push only to the job's repo, at the addresses checked when it started: not to a push URL,
+  // rewrite or new origin pointing elsewhere since. origin must still be that repo, and no Git
+  // setting may have started rewriting the checked addresses.
+  const now = await checkOrigin(sys, path, repo!, true);
+  const problem = typeof now === "string" ? now
+    : await addressProblem(sys, path, repo!, fetchUrl!, pushUrl).catch(() => "could not read origin's address");
+  if (problem) return `Not pushed: ${problem}. ${kept}`;
+
+  // Where origin's branch is now. A retry whose earlier push got there has nothing left to do,
+  // and says so before anything else is checked: nothing leaves this machine.
+  let remote: string | undefined;
+  let unreachable: string | undefined;
+  try {
+    await fetchBranch(sys, path, fetchUrl!, base, signal);
+    remote = await resolve(`refs/remotes/origin/${base}`).catch(error => {
+      unreachable = `Could not read ${base} from origin (${gitReason(error)}).`;
+      return undefined;
+    });
+  } catch (error) {
+    if (signal?.aborted) return cancelled;
+    unreachable = `Could not fetch ${base} from origin (${gitReason(error)}).`;
+  }
+  const onOrigin = `Nothing new to push: ${base} on origin already has this work.`;
+  if (remote && await ancestor(tip, remote)) return onOrigin;
+  const landed = record.landed;
+  if (remote && landed && landed.tip === tip && await ancestor(landed.commit, remote)) return onOrigin;
+
   // The job's commits are its own: none of them is on another branch of this checkout.
   const count = async (...args: string[]) => Number((await git(sys, path, "rev-list", "--count", tip, `^${start}`, ...args)).trim());
   try {
@@ -430,64 +475,64 @@ export async function pushWork(sys: System, path: string,
   } catch {
     return `Not pushed: could not check the commits on branch ${branch}. ${kept}`;
   }
-  // Push only to the job's repo, at the addresses checked when it started: not to a push URL,
-  // rewrite or new origin pointing elsewhere since. origin must still be that repo, and no Git
-  // setting may have started rewriting the checked addresses.
-  const now = await checkOrigin(sys, path, repo!, true);
-  const problem = typeof now === "string" ? now
-    : await addressProblem(sys, path, repo!, fetchUrl!, pushUrl).catch(() => "could not read origin's address");
-  if (problem) return `Not pushed: ${problem}. ${kept}`;
 
   // Only the job's commit, to one branch: no tags (whatever push.followTags says) and nothing in
   // a submodule's repo (whatever push.recurseSubmodules or submodule.recurse say).
   const push = (commit: string, target: string) => network(sys, path, signal, "push", "--quiet", "--no-follow-tags",
     "--recurse-submodules=no", "--", pushUrl!, `${commit}:refs/heads/${target}`);
-  const toBranch = async (why: string, commit: string) => {
+  // The fallback is always the job's own branch as it is on this machine.
+  const toBranch = async (why: string) => {
     if (signal?.aborted) return `${why} ${cancelled}`;
     try {
-      await push(commit, branch);
+      await push(tip, branch);
       return `${why} Pushed the work to branch ${branch} instead.`;
     } catch (error) {
       return `${why} Could not push branch ${branch} either (${gitReason(error)}). ${kept}`;
     }
   };
-  try {
-    await fetchBranch(sys, path, fetchUrl!, base, signal);
-  } catch (error) {
-    if (signal?.aborted) return cancelled;
-    return toBranch(`Could not fetch ${base} from origin (${gitReason(error)}).`, tip);
-  }
-  let remote: string;
-  try {
-    remote = await resolve(`refs/remotes/origin/${base}`);
-  } catch (error) {
-    return toBranch(`Could not read ${base} from origin (${gitReason(error)}).`, tip);
-  }
-  if (await ancestor(tip, remote)) return `Nothing new to push: ${base} on origin already has this work.`;
+  if (!remote) return toBranch(unreachable ?? `Could not read ${base} from origin.`);
   let landing = tip;
   if (!await ancestor(remote, tip)) {
-    // A rebase replays commits one by one and drops merges, with whatever was fixed in them.
+    // Replaying copies commits one by one and drops merges, with whatever was fixed in them.
     const merges = await git(sys, path, "rev-list", "--count", "--merges", tip, `^${start}`).then(n => Number(n.trim()), () => NaN);
-    if (merges !== 0) return toBranch(`${base} moved on, and the work has merge commits a rebase would lose.`, tip);
+    if (merges !== 0) return toBranch(`${base} moved on, and the work has merge commits a rebase would lose.`);
     if (signal?.aborted) return cancelled;
-    // Replay only the job's commits, start..tip, onto origin's branch.
-    try {
-      await git(sys, path, "rebase", "--quiet", "--onto", remote, start, branch);
-      landing = await resolve(`refs/heads/${branch}`);
-    } catch {
-      await git(sys, path, "rebase", "--abort").catch(() => {});
-      return toBranch(`${base} moved on, and the work doesn't rebase cleanly onto it.`, tip);
-    }
-    if (!await ancestor(remote, landing)) return toBranch(`${base} moved on, and the work didn't land on top of it.`, tip);
+    const replayed = await replay(sys, path, remote, start, tip, branch);
+    if (!replayed) return toBranch(`${base} moved on, and the work doesn't rebase cleanly onto it.`);
+    if (!await ancestor(remote, replayed)) return toBranch(`${base} moved on, and the work didn't land on top of it.`);
+    landing = replayed;
+    // Saved before the push: if the push gets through but this machine never hears, the retry knows.
+    await remember?.({ tip, commit: landing }).catch(() => {});
   }
   if (signal?.aborted) return cancelled;
   try {
     await push(landing, base);
   } catch (error) {
     if (signal?.aborted) return cancelled;
-    return toBranch(`Could not push to ${base} (${gitReason(error)}).`, landing);
+    return toBranch(`Could not push to ${base} (${gitReason(error)}).`);
   }
   return `Pushed to ${base} as ${(await git(sys, path, "rev-parse", "--short", landing)).trim()}.`;
+}
+
+/**
+ * Replay the job's commits (start..tip) onto origin's branch without touching the job's branch or
+ * worktree: on a temporary ref, with git replay (Git 2.44 or later). Returns the new tip, or
+ * undefined when the commits don't apply cleanly (or this Git can't replay).
+ */
+async function replay(sys: System, path: string, onto: string, start: string, tip: string, branch: string) {
+  const temp = `refs/opnav-landing/${branch.slice("opnav/".length)}`;
+  try {
+    await git(sys, path, "update-ref", temp, onto);
+    // Older Gits print the ref update for us to make; newer ones make it themselves.
+    const out = await git(sys, path, "replay", "--advance", temp, `${start}..${tip}`);
+    const printed = /^update \S+ ([a-f0-9]{40,64}) /m.exec(out)?.[1];
+    const commit = printed ?? (await git(sys, path, "rev-parse", "--verify", `${temp}^{commit}`)).trim();
+    return commit === onto ? undefined : commit;
+  } catch {
+    return undefined;
+  } finally {
+    await git(sys, path, "update-ref", "-d", temp).catch(() => {});
+  }
 }
 
 export async function pruneWorktrees(sys: System, now = Date.now()) {
@@ -503,11 +548,13 @@ export async function pruneWorktrees(sys: System, now = Date.now()) {
     const path = join(dir, id);
     const branch = `opnav/${id}`;
     try {
-      const { jobId, checkout, baseRef, createdAt } = await recordAt(join(dir, file));
+      const { jobId, checkout, baseRef, createdAt, landed } = await recordAt(join(dir, file));
       if (!jobId.startsWith(id) || !await registered(sys, checkout, path, branch)) continue;
+      const within = (commit: string) => git(sys, checkout, "merge-base", "--is-ancestor", commit, baseRef).then(() => true, () => false);
+      // Merged: the branch is in the checkout's branch, or the copy of it that was replayed and pushed is.
+      const tip = landed && (await git(sys, checkout, "rev-parse", "--verify", `refs/heads/${branch}^{commit}`).catch(() => "")).trim();
       const merged = baseRef.startsWith("refs/heads/") && !baseRef.startsWith("refs/heads/opnav/") &&
-        await git(sys, checkout, "merge-base", "--is-ancestor", `refs/heads/${branch}`, baseRef)
-          .then(() => true, () => false);
+        (await within(`refs/heads/${branch}`) || !!landed && tip === landed.tip && await within(landed.commit));
       if (!merged && now - createdAt <= maxAge) continue;
       // Git refuses to remove active or dirty worktrees. The branch keeps committed work available.
       await git(sys, checkout, "worktree", "remove", path);

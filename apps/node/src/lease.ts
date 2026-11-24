@@ -1,15 +1,16 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { LeaseRenewResponse, NODE, TerminalEventTypes } from "@opnav/shared";
+import { LeaseRenewResponse, NODE, PublishResponse, TerminalEventTypes } from "@opnav/shared";
 import type { JobEvent, Turn } from "@opnav/shared";
 import { ApiError } from "./api.ts";
 import type { Post } from "./api.ts";
 import { object } from "./system.ts";
-import type { EventContent, Terminal } from "./worker.ts";
+import type { EventContent, Publish, Terminal } from "./worker.ts";
 
 const terminalTypes = new Set<string>(TerminalEventTypes);
 
 export async function runTurn(post: Post, turn: Turn, signal: AbortSignal,
-  report: (message: string) => void, run: (signal: AbortSignal, emit: (event: EventContent) => void) => Promise<Terminal>) {
+  report: (message: string) => void,
+  run: (signal: AbortSignal, emit: (event: EventContent) => void, publish: Publish) => Promise<Terminal>) {
   const lease = new AbortController();
   const worker = new AbortController();
   const lifetime = AbortSignal.any([signal, lease.signal]);
@@ -33,6 +34,38 @@ export async function runTurn(post: Post, turn: Turn, signal: AbortSignal,
     if (error instanceof ApiError && [401, 404, 409].includes(error.status)) expire();
   }
 
+  function cancel() {
+    if (cancelled) return;
+    cancelled = true;
+    worker.abort();
+    // Allow one final delivery even if the cancellation response used the old expiry.
+    deadline = Math.max(deadline, Date.now() + 5000);
+    scheduleExpiry();
+  }
+  /**
+   * Ask the server before pushing. A cancel it accepted first wins: nothing is pushed and the turn
+   * ends cancelled. Once it says yes, publishing wins over a later cancel. No answer means no push.
+   */
+  const publish: Publish = async () => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (cancelled) return { ok: false, why: "the job was cancelled." };
+      if (lifetime.aborted) return { ok: false, why: "this machine no longer holds the job." };
+      try {
+        const answer = PublishResponse.parse(await post(NODE.publish(jobs), { leaseId: turn.leaseId }, lifetime));
+        if (answer.publish) return { ok: true };
+        cancel();
+        return { ok: false, why: "the job was cancelled." };
+      } catch (error) {
+        if (error instanceof ApiError && [401, 409].includes(error.status)) {
+          expire();
+          return { ok: false, why: "this machine no longer holds the job." };
+        }
+        await delay(500 * 2 ** attempt);
+      }
+    }
+    return { ok: false, why: "the server didn't say the work could be published." };
+  };
+
   if (deadline <= Date.now() || signal.aborted) return;
   scheduleExpiry();
   const renew = (async () => {
@@ -45,14 +78,7 @@ export async function runTurn(post: Post, turn: Turn, signal: AbortSignal,
         if (lifetime.aborted) return;
         deadline = Date.parse(updated.leaseExpiresAt);
         if (deadline <= Date.now() && !updated.cancel) return expire();
-        if (updated.cancel) {
-          cancelled = true;
-          worker.abort();
-          // Allow one final delivery even if the cancellation response used the old expiry.
-          deadline = Math.max(deadline, Date.now() + 5000);
-          scheduleExpiry();
-          return;
-        }
+        if (updated.cancel) return cancel();
         scheduleExpiry();
         interval = Math.max(100, (deadline - Date.now()) / 3);
       } catch (error) {
@@ -61,7 +87,7 @@ export async function runTurn(post: Post, turn: Turn, signal: AbortSignal,
       }
     }
   })();
-  const work = run(workerLifetime, emit).catch((): EventContent => ({
+  const work = run(workerLifetime, emit, publish).catch((): EventContent => ({
     type: "error", code: "worker_crashed", message: "The worker could not start.", retryable: false,
   })).then(emit);
   let retry = 250;

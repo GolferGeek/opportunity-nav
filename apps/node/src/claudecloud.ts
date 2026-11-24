@@ -7,8 +7,8 @@ import type { Turn } from "@opnav/shared";
 import { shortText } from "./activity.ts";
 import { object, string } from "./system.ts";
 import type { System } from "./system.ts";
-import { land, needsInputInstruction, terminal } from "./worker.ts";
-import type { EventContent, Terminal } from "./worker.ts";
+import { land, needsInputInstruction, publishFreely, terminal } from "./worker.ts";
+import type { EventContent, Publish, Terminal } from "./worker.ts";
 import { GitError, openWorktree, repoKey, WorktreeError, worktreeEnv } from "./worktrees.ts";
 
 /**
@@ -167,6 +167,8 @@ export interface ClaudeCloudOptions {
   /** Runs fired in all: the first plus retries. Default 2. */
   attempts?: number;
   pollMs?: number;
+  /** Asks the server before landing the work (lease.ts). */
+  publish?: Publish;
 }
 
 export async function runClaudeCloud(sys: System, config: RoutineConfig, turn: Turn, signal: AbortSignal,
@@ -196,7 +198,7 @@ export async function runClaudeCloud(sys: System, config: RoutineConfig, turn: T
     if (text.length > MAX_TEXT) return failed(`The task is too long for a Claude routine run (over ${MAX_TEXT.toLocaleString("en-US")} characters).`);
     const outcome = await follow(sys, config, turn, signal, emit, options, worktree, branch, text);
     if (signal.aborted) return cancelled;
-    await land(worktree, turn, outcome, true, signal, emit);
+    await land(worktree, turn, outcome, true, signal, emit, options.publish ?? publishFreely);
     return outcome;
   } catch (error) {
     if (signal.aborted) return cancelled;

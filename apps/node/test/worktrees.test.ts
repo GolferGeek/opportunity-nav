@@ -9,6 +9,7 @@ import type { JobSpec } from "@opnav/shared";
 import { checkouts } from "../src/capabilities.ts";
 import { system } from "../src/system.ts";
 import { agyOutcome, pushHold, runWorker, workerArgs } from "../src/worker.ts";
+import type { Publish } from "../src/worker.ts";
 import { gitReason, oneAtATime, openWorktree, pruneWorktrees, worktreeEnv } from "../src/worktrees.ts";
 import { git, initRepo } from "./fixtures/git.ts";
 
@@ -263,14 +264,14 @@ async function pushFixture(t: TestContext, agent: (home: string) => string[] = (
   ].join("\n") + "\n");
   await chmod(worker, 0o755);
   const spec: JobSpec = { ...job, checkoutPath: checkout, provider: "codex", title: "Fix it", push: true, remote: origin };
-  const run = async (onEvent?: (event: { type: string; text?: string }, cancel: () => void) => void) => {
+  const run = async (onEvent?: (event: { type: string; text?: string }, cancel: () => void) => void, publish?: Publish) => {
     const events: { type: string; text?: string }[] = [];
     const turn = { turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start" as const, job: spec };
     const controller = new AbortController();
     const outcome = await runWorker(sys, worker, turn, controller.signal, event => {
       events.push(event as any);
       onEvent?.(event as any, () => controller.abort());
-    });
+    }, "edit", publish);
     return { outcome, progress: events.filter(e => e.type === "progress").map(e => e.text!) };
   };
   const moveOrigin = async (file: string, text: string) => {
@@ -306,6 +307,56 @@ test("a job that pushes rebases onto origin when it moved on while it ran", asyn
   const { progress } = await run();
   assert.match(progress.at(-1)!, /^Pushed to main as [a-f0-9]+\.$/);
   assert.equal(git(origin, "log", "-2", "--format=%s", "main"), "Fix it\nElsewhere: during.txt");
+});
+
+test("a job whose cancel the server accepted just before publishing pushes nothing", async t => {
+  const { origin, spec, run } = await pushFixture(t);
+  const before = git(origin, "rev-parse", "main");
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  let asked = 0;
+  const { outcome, progress } = await run(undefined, async () => {
+    asked++;
+    return { ok: false, why: "the job was cancelled." };
+  });
+  assert.equal(asked, 1);
+  assert.deepEqual(outcome, { type: "result", summary: "Done." }, "the lease turns this into a cancelled result");
+  assert.equal(progress.at(-1), `Not pushed: the job was cancelled. The work is on branch ${branch} on this machine.`);
+  assert.equal(git(origin, "rev-parse", "main"), before);
+  assert.equal(git(origin, "branch", "--list", "opnav/*"), "");
+});
+
+test("a retry after origin moved on and the work was replayed lands, and a retry after that push knows it", async t => {
+  const { sys, origin, checkout, spec, run, moveOrigin } = await pushFixture(t);
+  const branch = `opnav/${spec.id.slice(0, 8)}`;
+  await (await openWorktree(sys, spec)).release();
+  const started = git(checkout, "rev-parse", branch);
+  await moveOrigin("during.txt", "pushed during the job\n");
+  // origin refuses the first push to main (and lets the fallback to the job's branch through).
+  const hook = join(origin, "hooks", "pre-receive");
+  await writeFile(hook, `#!/bin/sh\nif [ -f '${join(origin, "refuse-once")}' ]; then rm '${join(origin, "refuse-once")}'; echo refused >&2; exit 1; fi\n`);
+  await chmod(hook, 0o755);
+  await writeFile(join(origin, "refuse-once"), "");
+  const first = await run();
+  assert.equal(first.progress.at(-1), `Could not push to main (origin refused it). Pushed the work to branch ${branch} instead.`);
+  // The replay happened on a temporary ref: the job's branch still grows from where it started.
+  const tip = git(checkout, "rev-parse", branch);
+  assert.equal(git(checkout, "rev-parse", `${branch}~1`), started);
+  assert.equal(git(checkout, "for-each-ref", "refs/opnav-landing"), "");
+  // This machine's main picks up origin's commits, and origin moves on again before the retry.
+  git(checkout, "pull", "--quiet");
+  await moveOrigin("later.txt", "pushed before the retry\n");
+  const second = await run();
+  assert.match(second.progress.at(-1)!, /^Pushed to main as [a-f0-9]+\.$/, second.progress.at(-1));
+  assert.equal(git(origin, "log", "-3", "--format=%s", "main"), "Fix it\nElsewhere: later.txt\nElsewhere: during.txt");
+  assert.equal(git(checkout, "rev-parse", branch), tip);
+  // The push got through but say its result was lost: the next try finds the work on origin.
+  git(checkout, "pull", "--quiet");
+  const pushed = git(origin, "rev-parse", "main");
+  const third = await run();
+  assert.equal(third.progress.at(-1), "Nothing new to push: main on origin already has this work.");
+  assert.equal(git(origin, "rev-parse", "main"), pushed);
+  // Its replayed copy is in main, so the worktree counts as merged.
+  assert.equal(await pruneWorktrees(sys), 1);
 });
 
 test("jobs in the same repo run side by side, each in its own worktree, and all of them land", async t => {
