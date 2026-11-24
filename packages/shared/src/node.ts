@@ -67,6 +67,12 @@ export const NodeHeartbeat = z.object({
    * against this to know whether the machine has a free slot right now.
    */
   capacity: z.number().int().positive().default(1),
+  /**
+   * How many cloud jobs (runsInCloud) this helper runs at once, on top of
+   * capacity: they wait on a cloud and don't take a local slot. Omitted by older
+   * helpers, whose cloud jobs count against capacity.
+   */
+  cloudCapacity: z.number().int().nonnegative().optional(),
 });
 export type NodeHeartbeat = z.infer<typeof NodeHeartbeat>;
 

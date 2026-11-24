@@ -73,9 +73,15 @@ export const ClaimRequest = z.object({
   cloudroomProviders: z.array(ProviderId).default([]),
   /** This node will take Claude jobs for Claude's cloud right now (see NodeHeartbeat.claudeCloud). */
   claudeCloud: z.boolean().default(false),
-  /** Max turns to hand out in this call. */
-  max: z.number().int().positive().default(1),
-}).refine((r) => r.providers.length + r.cloudroomProviders.length > 0 || r.claudeCloud, "Offer at least one agent, direct or in a cloud.");
+  /**
+   * Max turns to hand out in this call: local slots free. When cloudMax is set,
+   * it's direct jobs only and may be 0; without it (older helpers) it covers every job.
+   */
+  max: z.number().int().nonnegative().default(1),
+  /** Max cloud jobs (runsInCloud) to hand out in this call: cloud slots free (see NodeHeartbeat.cloudCapacity). */
+  cloudMax: z.number().int().nonnegative().optional(),
+}).refine((r) => r.providers.length + r.cloudroomProviders.length > 0 || r.claudeCloud, "Offer at least one agent, direct or in a cloud.")
+  .refine((r) => r.max + (r.cloudMax ?? 0) > 0, "Offer at least one free slot.");
 export type ClaimRequest = z.infer<typeof ClaimRequest>;
 
 export const Turn = z.object({

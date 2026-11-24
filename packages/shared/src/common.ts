@@ -47,6 +47,13 @@ export type MachineTool = z.infer<typeof MachineTool>;
 export const Runner = z.enum(["direct", "cloudroom", "claude-cloud"]);
 export type Runner = z.infer<typeof Runner>;
 
+/**
+ * A job that runs in a cloud (anything but direct). The machine only waits on it,
+ * so it counts against the machine's cloud slots, not its local ones
+ * (NodeHeartbeat.cloudCapacity).
+ */
+export const runsInCloud = (runner: Runner | string) => runner !== "direct";
+
 export const Id = z.string().uuid();
 export const IsoTime = z.string().datetime({ offset: true });
 

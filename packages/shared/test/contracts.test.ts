@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ClaimRequest, JobEvent, NodeHeartbeat, readingIsCurrent, Runner, UsageReport } from "../src/index.ts";
+import { ClaimRequest, JobEvent, NodeHeartbeat, readingIsCurrent, Runner, runsInCloud, UsageReport } from "../src/index.ts";
 
 test("usage report rejects a token-shaped account key", () => {
   const r = UsageReport.safeParse({
@@ -36,4 +36,17 @@ test("a node can offer only Claude cloud jobs", () => {
   const hb = NodeHeartbeat.parse({ hostname: "h", platform: "darwin", arch: "arm64", helperVersion: "0.1.0", providers: [],
     claudeCloud: { ready: false, reason: "not set up" } });
   assert.deepEqual(hb.claudeCloud, { ready: false, reason: "not set up" });
+});
+
+test("cloud jobs have their own slots: a claim can have no local room and still offer cloud room", () => {
+  assert.equal(runsInCloud("direct"), false);
+  assert.equal(runsInCloud("claude-cloud"), true);
+  assert.equal(runsInCloud("cloudroom"), true);
+  const c = ClaimRequest.parse({ providers: ["claude"], claudeCloud: true, max: 0, cloudMax: 2 });
+  assert.equal(c.max, 0);
+  assert.equal(c.cloudMax, 2);
+  assert.equal(ClaimRequest.safeParse({ providers: ["claude"], max: 0 }).success, false, "no room at all");
+  assert.equal(ClaimRequest.parse({ providers: ["claude"] }).cloudMax, undefined, "older helpers don't send it");
+  const hb = NodeHeartbeat.parse({ hostname: "h", platform: "darwin", arch: "arm64", helperVersion: "0.1.0", providers: [], capacity: 3, cloudCapacity: 2 });
+  assert.equal(hb.cloudCapacity, 2);
 });
