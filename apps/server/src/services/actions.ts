@@ -124,7 +124,7 @@ export const actions = {
     run: (sql: Sql, userId: string, i: any, by: string) => answerQuestion(sql, userId, i.questionId, i.answer, by),
   },
   start_job: {
-    description: "Start an agent on a task in a project. Provider, model and location default to the project's settings. Any online machine with the agent and the repo picks it up; set machine to choose one, and needs if it must have Docker or a test database. Name the project by item, or by repo (its git remote). Set push to land the work on the branch the machine's checkout is on and push it; otherwise it stays on the job's own branch, unpushed. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch). Set runner \"claude-cloud\" to run Claude in Claude's own cloud through the person's Claude Code routine (only on a machine where list_machines says claudeCloud is ready and claudeCloudRepos has the repo; it starts from the checkout's branch on origin, can take up to 45 minutes, and is tried once more if nothing comes back).",
+    description: "Start an agent on a task in a project. Provider, model and location default to the project's settings. Any online machine with the agent and the repo picks it up; set machine to choose one, and needs if it must have Docker or a test database. Name the project by item, or by repo (its git remote). For a direct or claude-cloud job, set push to land the work on origin's default branch and push it. By default, the work stays on the job's own branch. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch). Set runner \"claude-cloud\" to run Claude in Claude's own cloud through the person's Claude Code routine (only on a machine where list_machines says claudeCloud is ready and claudeCloudRepos has the repo; it starts from origin's default branch, can take up to 45 minutes, and is tried once more if nothing comes back).",
     input: z.object({
       item: Ref.optional().describe("The project (or an item inside it) to work on. Or give repo instead."),
       repo: z.string().min(1).optional().describe("The project's git remote, e.g. github.com/owner/name, when item isn't given"),
@@ -137,7 +137,7 @@ export const actions = {
       runner: Runner.optional().describe("direct (default): on one of the person's machines. cloudroom: in Cloudroom's cloud. claude-cloud: Claude in Claude's cloud, through a routine."),
       machine: z.string().optional().describe("Run it on this machine (its name, e.g. the one list_machines shows). Default: any machine that can."),
       needs: z.array(MachineTool).optional().describe("What the machine must have: docker, database (a local Postgres for tests). Default: the project's."),
-      push: z.boolean().optional().describe("Land the work on the checkout's branch (e.g. main) and push it. Default false: commit on the job's branch, never push."),
+      push: z.boolean().optional().describe("For a direct or claude-cloud job, land the work on origin's default branch and push it. Default false."),
     }),
     run: async (sql: Sql, userId: string, i: any, by: string) => {
       if (!i.item && !i.repo) throw new HttpError(400, "Name the project: item or repo.");
@@ -188,8 +188,8 @@ export const actions = {
       runner: Runner.optional(),
       machine: z.string().optional().describe("Only this machine runs it. Default: any machine that can."),
       needs: z.array(MachineTool).optional().describe("What the machine must have: docker, database. Default: the project's."),
-      push: z.boolean().optional().describe("Land the work on the checkout's branch and push it. Default false."),
-      branch: z.string().min(1).optional().describe("Run from a checkout on this branch (e.g. a worktree's). Default: the machine's checkout of the repo."),
+      push: z.boolean().optional().describe("For a direct or claude-cloud job, land the work on the named branch on origin and push it. If branch is omitted, use origin's default branch. Default false."),
+      branch: z.string().min(1).optional().describe("The branch on origin to start from for a pushing direct job or a claude-cloud job. With push enabled, land the work there. If omitted, use origin's default branch."),
       after: z.array(z.string().min(1)).optional().describe("Start only after these succeed: keys, job ids, or handoff brief names"),
       localModel: z.boolean().optional().describe("It runs the machine's own local models (Ollama). Only one such job per machine at a time."),
       held: z.boolean().optional().describe("Add it on hold: it never starts until let go."),

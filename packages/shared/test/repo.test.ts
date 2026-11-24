@@ -19,6 +19,15 @@ test("Other hosts keep the path's case: a case-only difference is another repo",
   assert.equal(repoIdentity("/srv/git/Repo.git/"), "/srv/git/Repo");
 });
 
+test("URL paths with encoded separators cannot match a repo with literal separators", () => {
+  for (const separator of ["%2F", "%2f", "%5C", "%5c"]) {
+    const remote = `https://git.example.com/Team${separator}Repo`;
+    assert.equal(repoIdentity(remote), undefined);
+    assert.equal(sameRepo(remote, "https://git.example.com/Team/Repo"), false);
+  }
+  assert.equal(repoIdentity("https://git.example.com/Team/R%C3%A9po"), "git.example.com/Team/Répo");
+});
+
 test("The server's bare form counts only when asked for, and non-addresses give nothing", () => {
   assert.equal(repoIdentity("github.com/a/b"), undefined);
   assert.equal(repoIdentity("git.example.com:8443/Team/Repo", { serverForm: true }), "git.example.com:8443/Team/Repo");

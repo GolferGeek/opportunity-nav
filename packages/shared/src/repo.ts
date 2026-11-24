@@ -42,6 +42,8 @@ export function repoIdentity(remote: string, options: { serverForm?: boolean } =
     try {
       const url = new URL(value);
       if (!["ssh:", "git:", "http:", "https:"].includes(url.protocol) || url.search || url.hash) return undefined;
+      // Decoding a separator could make a different remote pass the repo identity check.
+      if (/%(?:2f|5c)/i.test(url.pathname)) return undefined;
       return identity(url.host, decodeURIComponent(url.pathname));
     } catch {
       return undefined;
