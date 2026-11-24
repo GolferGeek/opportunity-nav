@@ -56,3 +56,14 @@ test("a helper asks before publishing, and the answer says whether a cancel won"
   assert.deepEqual(PublishResponse.parse({ publish: false, cancel: true }), { publish: false, cancel: true });
   assert.equal(PublishResponse.safeParse({ publish: true }).success, false);
 });
+
+test("a checkout says whether it's a linked worktree and what origin's default branch is; older helpers omit both", () => {
+  const base = { hostname: "h", platform: "darwin", arch: "arm64", helperVersion: "0.1.0", providers: [] };
+  const hb = NodeHeartbeat.parse({ ...base, checkouts: [
+    { path: "/p/wt", remote: "github.com/o/r", branch: "fix/x", linked: true, defaultBranch: "main" },
+    { path: "/p/old", remote: "github.com/o/r", branch: "main" },
+  ] });
+  assert.equal(hb.checkouts[0]!.linked, true);
+  assert.equal(hb.checkouts[0]!.defaultBranch, "main");
+  assert.equal(hb.checkouts[1]!.linked, undefined);
+});

@@ -56,13 +56,18 @@ export const JobSpec = z.object({
   /** Source issue, if the job came from one. */
   issueUrl: z.string().url().optional(),
   /**
-   * Land the work on the branch the checkout was on, and push it. The node starts
-   * the worktree from that branch on origin, and when the job succeeds pushes
-   * there (fast-forward, rebasing if origin moved). If that can't be done it
-   * pushes the job's own branch instead and says so in a progress event.
+   * Land the work and push it: on `branch` when the job names one, otherwise on the
+   * project's default branch (the one origin's HEAD points to), never on whatever
+   * branch the checkout happens to be on. The node starts the worktree from that
+   * branch on origin, and when the job succeeds pushes there (fast-forward, rebasing
+   * if origin moved). If that can't be done it pushes the job's own branch instead
+   * and says so in a progress event. It pushes nothing to a branch that isn't the
+   * default one unless the job named it, nor to one already merged into the default.
    * Omitted or false: commit on the job's branch and never push.
    */
   push: z.boolean().optional(),
+  /** The branch the job asked to land on, on purpose. Omitted: the project's default branch. */
+  branch: z.string().min(1).optional(),
 });
 export type JobSpec = z.infer<typeof JobSpec>;
 

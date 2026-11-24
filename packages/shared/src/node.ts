@@ -28,6 +28,10 @@ export const Checkout = z.object({
   /** Normalised remote, e.g. "github.com/GolferGeek/opportunity-nav". Used to map checkouts to projects. */
   remote: z.string().optional(),
   branch: z.string().optional(),
+  /** A linked worktree (`git worktree add`), not the repo's own checkout. Older helpers omit it. */
+  linked: z.boolean().optional(),
+  /** The branch origin/HEAD points to here (main or master), when Git knows it. Older helpers omit it. */
+  defaultBranch: z.string().optional(),
 });
 export type Checkout = z.infer<typeof Checkout>;
 
