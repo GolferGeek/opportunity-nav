@@ -567,6 +567,7 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
 
     // Antigravity's reading is three hours old: Codex, with less left but current, goes first.
     await sql`update subscriptions set fetched_at = now() - interval '3 hours' where account_key = ${key("r2-agy")}`;
+    await sql`update usage_sources set fetched_at = now() - interval '3 hours' where subscription_id in (select id from subscriptions where account_key = ${key("r2-agy")})`;
     r = await review();
     assert.equal(r.provider, "codex");
     assert.match(r.picked.why, /Antigravity has 50% left \(not current: read 3 h ago\)\./);
@@ -587,6 +588,50 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     await ok(ui, "POST", "/api/tree", { kind: "project", title: "Elsewhere", parentId: area!.id, repoRemote: "https://github.com/GolferGeek/elsewhere" });
     const missing = await start({}, "golfer geek / elsewhere");
     assert.equal(missing.error, "No reviewer can run right now. Antigravity: no machine that runs it has this repo. Codex: no machine that runs it has this repo.");
+
+    await sql`update subscriptions set hidden = true where provider in ('agy', 'codex')`;
+  });
+
+  test("start_review: two machines on one account are judged by their own last poll", async () => {
+    const start = async (input: object = {}) => {
+      const r = await ok(agent, "POST", "/a2a", { jsonrpc: "2.0", id: 1, method: "message/send",
+        params: { message: { role: "user", messageId: "m4", parts: [{ kind: "data", data: { action: "start_review", input: { item: "golfer geek / opportunity nav", prompt: "Review the branch", among: ["codex"], ...input } } }] } } });
+      return r.error ? { error: r.error.message as string } : r.result.parts[0].data.result;
+    };
+    await sql`update turns set status = 'cancelled' where status = 'queued'`;
+    await sql`update turns set status = 'expired', lease_id = null where status = 'running'`;
+    await sql`update jobs set status = 'cancelled' where status in ('queued', 'running')`;
+    const can = { provider: "codex", signedIn: true, canRunJobs: true, locations: ["cloud"], models: [] };
+    await ok(node, "POST", "/api/node/heartbeat", { ...hb("laptop"), providers: [can] });
+    await ok(node2, "POST", "/api/node/heartbeat", { ...hb("studio"), providers: [can] });
+    const [laptop] = await sql`select n.id from nodes n join api_tokens t on t.id = n.token_id where n.name = 'laptop' and t.revoked_at is null`;
+    const week = new Date(Date.now() + 5 * 86400e3).toISOString();
+    const shared = key("r3-codex-shared");
+    const healthy = { provider: "codex", accountKey: shared, status: "ok", fetchedAt: now(),
+      windows: [{ id: "weekly", label: "Weekly", kind: "weekly", unit: "percent", used: 40, resetsAt: week }] };
+    const signIn = { provider: "codex", accountKey: shared, status: "auth_required", message: "Sign in to Codex to refresh usage.", windows: [] };
+    await ok(node, "POST", "/api/node/usage", { observedAt: now(), accounts: [healthy] });
+    await ok(node2, "POST", "/api/node/usage", { observedAt: now(), accounts: [signIn] });
+    const card = (await ok(ui, "GET", "/api/dashboard")).subscriptions.filter((s: any) => s.provider === "codex" && !s.hidden);
+    assert.equal(card.length, 1, "one card for the shared account");
+    assert.equal(card[0].status, "ok", "the account's card stays healthy from the laptop's reading");
+
+    // The studio needs a sign-in: the review goes only to the laptop, and the studio can't claim it.
+    const job = await start();
+    assert.equal(job.provider, "codex");
+    assert.equal(job.machineId, laptop!.id);
+    assert.equal(job.picked.why, "Codex has 60% left.");
+    assert.equal((await ok(node2, "POST", "/api/node/jobs/claim", { providers: ["codex"] })).turns.length, 0, "the studio can't take it");
+    await ok(ui, "POST", `/api/jobs/${job.id}/cancel`);
+
+    // Named on the studio: refused, though the account's reading is healthy.
+    assert.equal((await start({ machine: "studio" })).error, "No reviewer can run right now. Codex: the machine that runs it needs a sign-in.");
+
+    // Both need a sign-in: nothing goes out.
+    await new Promise((res) => setTimeout(res, 5));
+    await ok(node, "POST", "/api/node/usage", { observedAt: now(), accounts: [signIn] });
+    assert.equal((await start()).error, "No reviewer can run right now. Codex: every free machine that runs it needs a sign-in.");
+    assert.equal((await sql`select count(*)::int as n from jobs where status in ('queued', 'running')`)[0]!.n, 0);
 
     await sql`update subscriptions set hidden = true where provider in ('agy', 'codex')`;
   });

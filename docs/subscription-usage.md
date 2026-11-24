@@ -52,6 +52,9 @@ When an adapter learns the account only from a reading (Grok, or Antigravity wit
 A report can name older keys (`aliases`); the server folds those cards into this one. A folded card is hidden and points at the survivor (`merged_into`), so reports from older helpers still land on the right card. Nothing is deleted.
 To fold a duplicate by hand: `node --env-file=~/.config/opportunity-nav/server.env apps/server/src/admin.ts merge-usage --from <id> --into <id>`.
 
+The card's windows are shared by everyone on the account, but each machine's own last poll (its status and time) is kept too.
+The review picker judges a machine by its own poll: one whose last poll needs a sign-in never gets a review, and one whose own reading is old ranks as not current, even when another machine on the account has a healthy reading.
+
 ## Risks
 
 - **The Claude, Cursor, Grok and Cloud Code endpoints aren't documented public APIs.** They're what the providers' own tools call, so they can change without notice. Keep each one behind its own adapter so one breaking doesn't take down the rest.

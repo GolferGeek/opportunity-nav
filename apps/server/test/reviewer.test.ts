@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { accountLeft, ASSUMED_LEFT, bestMachine, freeMachines, pickReason, rankReviewers, staleText, usageLeft, type AccountReading, type MachineView } from "../src/services/reviewer.ts";
+import { accountLeft, ASSUMED_LEFT, bestMachine, freeMachines, pickReason, rankReviewers, staleText, usageLeft, type AccountReading, type MachineSource, type MachineView } from "../src/services/reviewer.ts";
 
 const now = Date.parse("2026-11-23T12:00:00Z");
 const later = "2026-11-24T12:00:00Z", earlier = "2026-11-22T12:00:00Z";
@@ -115,7 +115,8 @@ describe("readings that aren't current", () => {
 });
 
 describe("accounts and machines", () => {
-  const readings = (accounts: AccountReading[], links: Record<string, string> = {}) => ({ accounts, byMachine: new Map(Object.entries(links)) });
+  const readings = (accounts: AccountReading[], links: Record<string, string | MachineSource> = {}) =>
+    ({ accounts, byMachine: new Map(Object.entries(links).map(([m, l]) => [m, typeof l === "string" ? { account: l, stale: accounts.find((a) => a.id === l)?.stale } : l])) });
   test("one account: every machine is on it, and the job isn't pinned", () => {
     const a = { id: "A", left: 40 };
     assert.deepEqual(bestMachine(readings([a], { m1: "A" }), ["m2"], ["m1", "m2"]), { account: a, machineId: undefined });
@@ -129,17 +130,36 @@ describe("accounts and machines", () => {
   test("a reading isn't shared with a machine on another account", () => {
     // m2 runs it but never reported an account; with two accounts known, it has no reading.
     const r = readings([{ id: "A", left: 90 }, { id: "B", left: 30 }], { m1: "A" });
-    assert.deepEqual(bestMachine(r, ["m2"], ["m1", "m2"]), { account: null });
+    assert.deepEqual(bestMachine(r, ["m2"], ["m1", "m2"]), { account: null, machineId: "m2" });
     // The account m1 reads doesn't carry over to m2 just because both run the agent.
     assert.equal(bestMachine(readings([{ id: "A", left: 90 }, { id: "B", left: 10 }], { m1: "A", m2: "B" }), ["m2"], ["m1", "m2"]).account!.left, 10);
   });
   test("a machine with no reading beats one whose account is empty", () => {
     const r = readings([{ id: "A", left: 0 }, { id: "B", left: 50 }], { m1: "A" });
-    assert.deepEqual(bestMachine(r, ["m1", "m2"], ["m1", "m2"]), { account: null });
+    assert.deepEqual(bestMachine(r, ["m1", "m2"], ["m1", "m2"]), { account: null, machineId: "m2" });
   });
   test("a current account beats a fuller one that isn't", () => {
     const a = { id: "A", left: 90, stale: "read 3 h ago" }, b = { id: "B", left: 30 };
-    assert.equal(bestMachine(readings([a, b], { m1: "A", m2: "B" }), ["m1", "m2"], ["m1", "m2"]).account, b);
+    assert.deepEqual(bestMachine(readings([a, b], { m1: "A", m2: "B" }), ["m1", "m2"], ["m1", "m2"]).account, b);
+  });
+  test("one account, two machines: each machine's own poll decides if it's current or needs a sign-in", () => {
+    const a = { id: "A", left: 60 };
+    const healthy = { account: "A" }, signIn = { account: "A", stale: "needs a sign-in, read 2 h ago", signIn: true };
+    // The review goes only to the healthy machine, whichever is listed first.
+    assert.deepEqual(bestMachine(readings([a], { ok: healthy, out: signIn }), ["out", "ok"], ["out", "ok"]), { account: a, machineId: "ok" });
+    assert.deepEqual(bestMachine(readings([a], { ok: healthy, out: signIn }), ["ok", "out"], ["ok", "out"]), { account: a, machineId: "ok" });
+    // Only the one that needs a sign-in is free: nothing goes out, even though the account's reading is healthy.
+    assert.deepEqual(bestMachine(readings([a], { ok: healthy, out: signIn }), ["out"], ["ok", "out"]),
+      { account: null, why: "the machine that runs it needs a sign-in" });
+    // Both need a sign-in: nothing goes out.
+    assert.deepEqual(bestMachine(readings([a], { m1: signIn, m2: signIn }), ["m1", "m2"], ["m1", "m2"]),
+      { account: null, why: "every free machine that runs it needs a sign-in" });
+    // A machine whose own reading is old ranks as not current, and a current one on the same account wins.
+    const old = { account: "A", stale: "read 3 h ago" };
+    assert.deepEqual(bestMachine(readings([a], { old, ok: healthy }), ["old", "ok"], ["old", "ok"]), { account: a, machineId: "ok" });
+    assert.deepEqual(bestMachine(readings([a], { old, ok: healthy }), ["old"], ["old", "ok"]), { account: { ...a, stale: "read 3 h ago" }, machineId: "old" });
+    // Both read it the same way: not pinned.
+    assert.deepEqual(bestMachine(readings([a], { m1: healthy, m2: healthy }), ["m2"], ["m1", "m2"]), { account: a, machineId: undefined });
   });
   test("no free machine: the best account overall, for the reply", () => {
     const a = { id: "A", left: 20 }, b = { id: "B", left: 60 };
@@ -177,7 +197,7 @@ describe("Antigravity's Gemini reading in the picker", () => {
     { window_id: "Gemini models:gemini-weekly", unit: "percent", used: 85, resets_at: later },
   ];
   const pick = (windows: typeof claude, stale?: string) => {
-    const r = { accounts: [{ id: "s1", left: accountLeft(windows, now, "agy"), stale }], byMachine: new Map([["m1", "s1"]]) };
+    const r = { accounts: [{ id: "s1", left: accountLeft(windows, now, "agy"), stale }], byMachine: new Map([["m1", { account: "s1", stale }]]) };
     return usageLeft("agy", bestMachine(r, ["m1"], ["m1"]).account);
   };
   test("a real Gemini reading counts, not the stand-in", () => {

@@ -33,6 +33,13 @@ import { listMachines } from "./machines.ts";
  * that hasn't reported an account for the agent counts as on the agent's only
  * account, if it has just one; otherwise it has no reading.
  *
+ * Quota windows are shared by everyone on an account, but whether a machine's
+ * reading is current is its own: its last poll's status and time. A machine
+ * whose last poll needs a sign-in never gets a review, and one whose own
+ * reading isn't current ranks as not current, however healthy another
+ * machine's reading of the same account is. When the machines that run the
+ * agent don't all agree on that, the job goes to the machine picked.
+ *
  * Antigravity takes a fair share: with no reading for its default (Gemini)
  * model, it counts as half left, like a current reading (ASSUMED_LEFT).
  */
@@ -128,8 +135,20 @@ export type AccountReading = {
   stale?: string;
 };
 
-/** Each provider's accounts, and which account each machine reports for it. */
-export type ProviderReadings = { accounts: AccountReading[]; byMachine: Map<string, string> };
+/** A machine's own last poll of an account: which account, and whether that poll is current. */
+export type MachineSource = {
+  account: string;
+  /** Unset when this machine's own reading is current. */
+  stale?: string;
+  /** Its last poll needs a sign-in: it can't take a review. */
+  signIn?: boolean;
+};
+
+/** Each provider's accounts, and which account each machine reports for it (with its own poll's state). */
+export type ProviderReadings = { accounts: AccountReading[]; byMachine: Map<string, MachineSource> };
+
+/** An account as one machine sees it: the account's windows, that machine's freshness. */
+export type MachineReading = AccountReading & { signIn?: boolean };
 
 /** Why an account's reading isn't current, or undefined when it is. */
 export function staleText(status: string, fetchedAt: Date | string | null, now = Date.now()): string | undefined {
@@ -138,44 +157,62 @@ export function staleText(status: string, fetchedAt: Date | string | null, now =
   return fetchedAt ? `read ${agoText(fetchedAt, now)}` : "never read";
 }
 
-/** The account a machine runs this agent on: the one it reports, else the agent's only account. */
-export function machineAccount(r: ProviderReadings, machineId: string): AccountReading | null {
-  const id = r.byMachine.get(machineId);
-  if (id) return r.accounts.find((a) => a.id === id) ?? null;
-  return r.accounts.length === 1 ? r.accounts[0]! : null;
+/**
+ * The account a machine runs this agent on: the one it reports, else the
+ * agent's only account. Usage left is the account's; whether it's current
+ * (and whether it needs a sign-in) is the machine's own last poll.
+ */
+export function machineAccount(r: ProviderReadings, machineId: string): MachineReading | null {
+  const src = r.byMachine.get(machineId);
+  if (!src) return r.accounts.length === 1 ? r.accounts[0]! : null;
+  const a = r.accounts.find((x) => x.id === src.account);
+  if (!a) return null;
+  const out: MachineReading = { id: a.id, left: a.left };
+  if (src.stale) out.stale = src.stale;
+  if (src.signIn) out.signIn = true;
+  return out;
 }
+
+/** Two machines read the same when they're on one account and agree on whether it's current and signed in. */
+const sameReading = (a: MachineReading | null, b: MachineReading | null) =>
+  a?.id === b?.id && !!a?.stale === !!b?.stale && !!a?.signIn === !!b?.signIn;
 
 /** Like `score`, but an empty account ranks below a machine with no reading: that machine might still run. */
 const accountScore = (a: AccountReading | null) => (!a ? 0 : a.left != null && a.left <= 0 ? -1 : score({ provider: "", left: a.left, stale: a.stale }));
 
 /**
- * The usage that counts for an agent: the best account among the free
- * machines' own accounts (current beats not current, then most left; ties go
- * to the first machine). The job goes to that machine unless every machine
- * that runs the agent is on that account. With no free machine, the best
- * account overall, for the reply.
+ * The usage that counts for an agent: the best reading among the free
+ * machines' own (current beats not current, then most left; ties go to the
+ * first machine). A free machine whose own last poll needs a sign-in is left
+ * out; when that leaves none, `why` says so. The job goes to the machine
+ * picked unless every machine that runs the agent reads the same (same
+ * account, equally current, none needing a sign-in). With no free machine,
+ * the best account overall, for the reply.
  */
-export function bestMachine(r: ProviderReadings, free: readonly string[], capable: readonly string[]): { account: AccountReading | null; machineId?: string } {
+export function bestMachine(r: ProviderReadings, free: readonly string[], capable: readonly string[]): { account: AccountReading | null; machineId?: string; why?: string } {
   if (!free.length) {
     const read = r.accounts.filter((a) => a.left != null);
     return { account: read.length ? read.reduce((b, a) => (accountScore(a) > accountScore(b) ? a : b)) : null };
   }
-  let machine = free[0]!, account = machineAccount(r, machine);
-  for (const m of free.slice(1)) {
+  const eligible = free.filter((m) => !machineAccount(r, m)?.signIn);
+  if (!eligible.length) return { account: null, why: free.length > 1 ? "every free machine that runs it needs a sign-in" : "the machine that runs it needs a sign-in" };
+  let machine = eligible[0]!, account = machineAccount(r, machine);
+  for (const m of eligible.slice(1)) {
     const a = machineAccount(r, m);
     if (accountScore(a) > accountScore(account)) { machine = m; account = a; }
   }
-  if (account?.left == null) return { account: null };
-  const shared = capable.every((m) => machineAccount(r, m)?.id === account!.id);
-  return { account, machineId: shared ? undefined : machine };
+  const shared = capable.every((m) => sameReading(machineAccount(r, m), account));
+  const machineId = shared ? undefined : machine;
+  if (account?.left == null) return machineId ? { account: null, machineId } : { account: null };
+  return { account, machineId };
 }
 
-/** Each provider's visible accounts, read, and the account each machine last reported. */
+/** Each provider's visible accounts, read, and the account each machine last reported, with that machine's own poll status and time. */
 export async function accountReadings(db: Db, userId: string, providers: readonly string[]): Promise<Map<string, ProviderReadings>> {
   const rows = await db`select s.id, s.provider, s.status, s.fetched_at, w.window_id, w.unit, w.used, w.lim, w.resets_at, w.model
     from subscriptions s left join usage_windows w on w.subscription_id = s.id
     where s.user_id = ${userId} and not s.hidden and s.provider in ${db(providers as string[])}`;
-  const sources = await db`select distinct on (u.node_id, s.provider) u.node_id, s.provider, s.id
+  const sources = await db`select distinct on (u.node_id, s.provider) u.node_id, s.provider, s.id, u.status, u.fetched_at
     from usage_sources u join subscriptions s on s.id = u.subscription_id
     where s.user_id = ${userId} and not s.hidden and s.provider in ${db(providers as string[])}
     order by u.node_id, s.provider, u.observed_at desc`;
@@ -190,7 +227,13 @@ export async function accountReadings(db: Db, userId: string, providers: readonl
   for (const [id, a] of byAccount) {
     out.get(a.provider)?.accounts.push({ id, left: accountLeft(a.windows, now, a.provider), stale: staleText(a.status, a.fetchedAt, now) });
   }
-  for (const s of sources) out.get(s.provider)?.byMachine.set(s.node_id, s.id);
+  for (const s of sources) {
+    const src: MachineSource = { account: s.id };
+    const stale = staleText(s.status, s.fetched_at, now);
+    if (stale) src.stale = stale;
+    if (s.status === "auth_required") src.signIn = true;
+    out.get(s.provider)?.byMachine.set(s.node_id, src);
+  }
   return out;
 }
 
@@ -238,7 +281,7 @@ export async function pickReviewer(db: Db, userId: string, among: readonly strin
   const all: Candidate[] = among.map((provider) => {
     const free = freeMachines(machines, provider, want);
     const best = bestMachine(accounts.get(provider) ?? { accounts: [], byMachine: new Map() }, free.ids, free.capable);
-    return { ...usageLeft(provider, best.account), cantRun: free.why, machineId: best.machineId };
+    return { ...usageLeft(provider, best.account), cantRun: free.why ?? best.why, machineId: best.machineId };
   });
   const picked = rankReviewers(all);
   if (!picked) {
