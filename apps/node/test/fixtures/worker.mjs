@@ -30,7 +30,7 @@ if (codex) {
   assert.deepEqual(args.slice(0, 4), ["-p", "--output-format", "stream-json", "--verbose"]);
   assert.ok(args.includes("--effort"));
   assert.ok(args.includes("acceptEdits"));
-  emit({ type: "system", subtype: "init", session_id: "session-from-claude" });
+  emit({ type: "system", subtype: "init", session_id: "session-from-claude", model: "claude-test-model-20260101" });
   if (prompt.startsWith("Wait")) {
     setInterval(() => {}, 1000);
   } else {

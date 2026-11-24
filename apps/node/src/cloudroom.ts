@@ -159,7 +159,8 @@ export async function runCloudroom(sys: System, binary: string, turn: Turn, sign
       const result = string(spawned.id);
       if (!result || !threadId.test(result)) throw new CloudroomError("Cloudroom did not return a thread ID.");
       thread = result;
-      if (!signal.aborted) emit({ type: "session", providerSessionId: thread });
+      const model = job.model ?? options.defaultModel;
+      if (!signal.aborted) emit({ type: "session", providerSessionId: thread, ...(model ? { model } : {}) });
     }
 
     const started = performance.now();

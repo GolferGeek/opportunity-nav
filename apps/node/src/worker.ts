@@ -260,10 +260,14 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
   proc.stdin.on("error", () => {});
   proc.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-8192); });
   const lines = createInterface({ input: proc.stdout });
-  const setSession = (id?: string) => {
-    if (id && id !== session) {
-      session = id;
-      emit({ type: "session", providerSessionId: id });
+  // The model the agent says it runs (Claude's init line): sent with the session id, again if only it is new.
+  let reportedModel: string | undefined;
+  const setSession = (id?: string, model?: string) => {
+    const newModel = model && model !== reportedModel ? model : undefined;
+    if (id && id !== session || newModel && (id ?? session)) {
+      session = id ?? session;
+      reportedModel = newModel ?? reportedModel;
+      emit({ type: "session", providerSessionId: session!, ...(newModel ? { model: newModel } : {}) });
     }
   };
   const usage = (raw: unknown, cost?: unknown) => {
@@ -334,7 +338,7 @@ async function runInWorktree(sys: System, binary: string, turn: Turn, signal: Ab
       return;
     }
     if (turn.job.provider === "claude") {
-      setSession(string(event.session_id));
+      setSession(string(event.session_id), event.type === "system" && event.subtype === "init" ? string(event.model) : undefined);
       progress(claudeActivity(event));
       if (event.type === "result") {
         complete = true;

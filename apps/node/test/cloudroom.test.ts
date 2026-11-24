@@ -59,7 +59,7 @@ test("Cloudroom detects mapped harnesses once and runs a start turn without a wo
   const result = await runCloudroom(sys, status.binary, turn, new AbortController().signal, event => events.push(event),
     { email: status.email, pollMs: 1 });
   assert.deepEqual(result, { type: "needs_input", needsInput: { question: "Confirm [redacted]?" } });
-  assert.deepEqual(events, [{ type: "session", providerSessionId: "thr_demo" },
+  assert.deepEqual(events, [{ type: "session", providerSessionId: "thr_demo", model: "test-model" },
     { type: "progress", text: "Ran: echo [redacted]" }, { type: "usage", inputTokens: 10, outputTokens: 5 }]);
   const recorded = await calls();
   assert.equal(recorded.filter(({ args }) => args[0] === "cloud").length, 1);

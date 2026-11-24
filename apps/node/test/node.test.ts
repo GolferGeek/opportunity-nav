@@ -308,6 +308,7 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
     assert.ok(usage && external && renewed && active, JSON.stringify({ usage, external, renewed, active, claim, events: [...received.values()].map(batch => batch.map(event => event.type)), statuses }));
     const first = received.get(turns[0]!.job.id);
     assert.equal(first?.[0]?.type, "session");
+    assert.equal(first?.[0]?.type === "session" && first[0].model, "claude-test-model-20260101", "the model Claude's init line names");
     assert.equal(first?.at(-1)?.type, "needs_input");
     const second = received.get(turns[1]!.job.id)?.at(-1);
     assert.ok(second?.type === "result" && second.summary === "Finished.");
