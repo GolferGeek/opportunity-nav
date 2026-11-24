@@ -92,12 +92,27 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
 /**
  * The tree nodes something is working on: a queued, running or waiting job was
  * started from them. Every other item is unattended, and clicking it opens the
- * new-job form. Jobs from before jobs remembered their item count for no item.
+ * new-job form. A live job from before jobs remembered their item makes
+ * attendance unknown for its whole project, so none of that project's items
+ * invite duplicate work until the legacy job finishes.
  */
 export async function attended(db: Db, userId: string): Promise<string[]> {
-  const rows = await db`select distinct item_id from jobs
-    where user_id = ${userId} and item_id is not null and status in ('queued', 'running', 'waiting')`;
-  return rows.map((r) => r.item_id as string);
+  const rows = await db`
+    with recursive live_jobs as (
+      select project_id, item_id from jobs
+      where user_id = ${userId} and status in ('queued', 'running', 'waiting')
+    ), legacy_projects as (
+      select distinct project_id from live_jobs where item_id is null
+    ), legacy_project_nodes as (
+      select n.id, n.kind from tree_nodes n join legacy_projects p on p.project_id = n.id
+      union all
+      select child.id, child.kind from tree_nodes child join legacy_project_nodes parent on child.parent_id = parent.id
+      where child.user_id = ${userId}
+    )
+    select item_id as id from live_jobs where item_id is not null
+    union
+    select id from legacy_project_nodes where kind = 'item'`;
+  return rows.map((r) => r.id as string);
 }
 
 /** The newest activity line, so a running item says what it's doing right now. */
