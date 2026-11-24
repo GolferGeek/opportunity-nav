@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 import { arch, hostname } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ClaimResponse, DEFAULT_HEARTBEAT_INTERVAL_SEC, DEFAULT_USAGE_INTERVAL_SEC, ExternalWorkReport,
-  NODE, NodeHeartbeat, NodeHeartbeatResponse } from "@opnav/shared";
+  NODE, NodeHeartbeat, NodeHeartbeatResponse, runsInCloud } from "@opnav/shared";
 import type { ProviderCapability } from "@opnav/shared";
 import { nodeApi } from "./api.ts";
 import { capabilities, checkouts, machineTools } from "./capabilities.ts";
@@ -29,6 +29,12 @@ export interface StartNodeOptions {
   claimIntervalMs?: number;
   /** Jobs this helper runs at once, each in its own worktree. Default OPNAV_CAPACITY, else 3. */
   capacity?: number;
+  /**
+   * Cloud jobs (Claude's cloud, Cloudroom) this helper runs at once, on top of
+   * capacity: they only wait on a cloud, so they don't take a local slot.
+   * Default OPNAV_CLOUD_CAPACITY, else 2. 0 = no cloud jobs.
+   */
+  cloudCapacity?: number;
   externalIntervalMs?: number;
   onStatus?: (message: string) => void;
   fetch?: typeof fetch;
@@ -63,8 +69,12 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
   let usageWake = new AbortController();
   let providers: ProviderCapability[] = [];
   const capacity = jobCapacity(options.capacity ?? sys.env.OPNAV_CAPACITY);
+  const cloudCapacity = cloudJobCapacity(options.cloudCapacity ?? sys.env.OPNAV_CLOUD_CAPACITY);
   // The turns running now, by job. Each has its own lease, worktree, events and cancel; nothing else is shared.
   const running = new Map<string, Promise<void>>();
+  // The ones of those that run in a cloud: they count against cloudCapacity, the rest against capacity.
+  const inCloud = new Set<string>();
+  const counts = () => ({ local: running.size - inCloud.size, cloud: inCloud.size });
   let handoff: string | undefined;
   const handoffBriefs = new Map<string, string>();
   const configured = options.handoffDir === false ? undefined : localPath(sys, options.handoffDir ?? "~/Work/handoff");
@@ -105,7 +115,7 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
         arch: arch(), autonomy, helperVersion: await version, providers: detected, checkouts: discovered,
         cloudroom: cloudroom && { providers: cloudroom.providers }, tools,
         claudeCloud: claudeCloud.ready ? { ready: true } : { ready: false, reason: claudeCloud.reason },
-        handoff: handoff ? { dir: handoff } : undefined, activeJobIds: [...running.keys()], capacity });
+        handoff: handoff ? { dir: handoff } : undefined, activeJobIds: [...running.keys()], capacity, cloudCapacity });
       const answer = NodeHeartbeatResponse.parse(await post(NODE.heartbeat, payload));
       time = answer;
       if (answer.checkUsageNow) usageWake.abort();
@@ -135,13 +145,17 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
       // Claude's cloud needs only the routine file: the runner doesn't use the Claude CLI.
       const claudeCloud = await detectClaudeCloud();
       if (!available.size && !cloudroomProviders.length && !claudeCloud.ready) return interval;
-      const free = capacity - running.size;
-      if (free <= 0) return interval;
+      const now = counts();
+      const free = Math.max(0, capacity - now.local);
+      const cloudFree = cloudroomProviders.length || claudeCloud.ready ? Math.max(0, cloudCapacity - now.cloud) : 0;
+      if (free + cloudFree <= 0) return interval;
       const { turns } = ClaimResponse.parse(await post(NODE.claim, {
-        providers: [...available.keys()], cloudroomProviders, claudeCloud: claudeCloud.ready, max: free,
+        providers: [...available.keys()], cloudroomProviders, claudeCloud: claudeCloud.ready, max: free, cloudMax: cloudFree,
       }));
       for (const turn of turns) {
-        if (running.has(turn.job.id) || running.size >= capacity) continue;
+        const inACloud = runsInCloud(turn.job.runner);
+        const taken = counts();
+        if (running.has(turn.job.id) || (inACloud ? taken.cloud >= cloudCapacity : taken.local >= capacity)) continue;
         const provider = available.get(turn.job.provider);
         const cloud = turn.job.runner === "cloudroom";
         const routine = turn.job.runner === "claude-cloud" && claudeCloud.ready ? claudeCloud.config : undefined;
@@ -159,8 +173,12 @@ export function startNode(options: StartNodeOptions): { stop(): Promise<void> } 
             : runWorker(sys, provider!.cliPath!, turn, lifetime, emit, autonomy);
         }).catch(() => {
           if (!signal.aborted) report("A job stopped unexpectedly.");
-        }).finally(() => running.delete(turn.job.id));
+        }).finally(() => {
+          running.delete(turn.job.id);
+          inCloud.delete(turn.job.id);
+        });
         running.set(turn.job.id, run);
+        if (inACloud) inCloud.add(turn.job.id);
       }
       return interval;
     }, 5000),
@@ -179,6 +197,15 @@ const MAX_CAPACITY = 16;
 export function jobCapacity(value: number | string | undefined): number {
   const n = typeof value === "string" && value.trim() ? Number(value) : value;
   return typeof n === "number" && Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_CAPACITY) : DEFAULT_CAPACITY;
+}
+
+export const DEFAULT_CLOUD_CAPACITY = 2;
+const MAX_CLOUD_CAPACITY = 8;
+
+/** How many cloud jobs to run at once: a whole number from 0 to 8, else the default. */
+export function cloudJobCapacity(value: number | string | undefined): number {
+  const n = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 ? Math.min(n, MAX_CLOUD_CAPACITY) : DEFAULT_CLOUD_CAPACITY;
 }
 
 export async function readUsage(options: Pick<StartNodeOptions, "system" | "fetch"> = {}) {

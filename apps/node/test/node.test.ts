@@ -9,7 +9,8 @@ import type { TestContext } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ClaimRequest, ExternalWorkReport, JobEventsRequest, NodeHeartbeat, NODE, UsageReport } from "@opnav/shared";
 import type { JobEvent, Turn } from "@opnav/shared";
-import { jobCapacity, startNode } from "../src/index.ts";
+import { cloudJobCapacity, jobCapacity, startNode } from "../src/index.ts";
+import { ROUTINE_FILE } from "../src/claudecloud.ts";
 import { normalizeRemote } from "../src/capabilities.ts";
 import { handoffReport } from "../src/handoff.ts";
 import { system } from "../src/system.ts";
@@ -233,7 +234,16 @@ test("node sends heartbeat, uploads usage, retries events, resumes and cancels w
         return respond({ accepted: 1 });
       }
       if (req.url === NODE.claim) {
-        assert.deepEqual(ClaimRequest.parse(body), { providers: ["claude", "codex", "ollama"], cloudroomProviders: ["claude", "codex", "agy"], claudeCloud: false, max: 1 });
+        const request = ClaimRequest.parse(body);
+        // These turns are direct: while one runs, the helper still asks for cloud room only (max 0), and gets nothing.
+        if (request.max === 0) {
+          assert.equal(request.cloudMax, 2);
+          return respond({ turns: [] });
+        }
+        const { cloudMax, ...rest } = request;
+        assert.deepEqual(rest, { providers: ["claude", "codex", "ollama"], cloudroomProviders: ["claude", "codex", "agy"], claudeCloud: false, max: 1 });
+        // Two cloud slots, one of them taken while the Cloudroom job runs.
+        assert.ok(cloudMax === 2 || cloudMax === 1, `cloudMax ${cloudMax}`);
         const turn = turns[claim++];
         if (turn) turn.leaseExpiresAt = new Date(Date.now() + 3500).toISOString();
         return respond({ turns: turn ? [turn] : [] });
@@ -445,6 +455,140 @@ test("node runs several jobs at once, up to its capacity, each with its own leas
     assert.equal(last(c), "C done.");
     assert.equal(last(b), "cancelled", "only the cancelled job stops");
     assert.equal(last(d), "D done.", "the fourth job ran once a slot was free");
+  } finally {
+    await service.stop();
+  }
+});
+
+test("cloud capacity: a setting from 0 to 8, 2 by default", () => {
+  assert.equal(cloudJobCapacity(undefined), 2);
+  assert.equal(cloudJobCapacity(""), 2);
+  assert.equal(cloudJobCapacity("0"), 0);
+  assert.equal(cloudJobCapacity("3"), 3);
+  assert.equal(cloudJobCapacity("-1"), 2);
+  assert.equal(cloudJobCapacity(20), 8);
+});
+
+test("cloud jobs have their own slots: claimed with every local slot full, capped, and never in a local job's way", { timeout: 15_000 }, async t => {
+  const home = await fixture(t);
+  const seed = join(home, "seed");
+  await mkdir(seed);
+  initRepo(seed);
+  const origin = join(home, "origin.git");
+  git(home, "clone", "--quiet", "--bare", seed, origin);
+  const checkout = join(home, "clone");
+  git(home, "clone", "--quiet", origin, checkout);
+  const routine = join(home, ROUTINE_FILE);
+  await mkdir(join(routine, ".."), { recursive: true });
+  const fire = "https://api.anthropic.com/v1/claude_code/routines/trig_01SLOTS/fire";
+  await writeFile(routine, JSON.stringify({ url: fire, token: "sk-ant-oat01-fake", repos: [origin] }), { mode: 0o600 });
+  await chmod(routine, 0o600);
+  const projectId = randomUUID();
+  const make = (name: string, cloud: boolean): Turn => ({ turnId: randomUUID(), leaseId: randomUUID(), leaseExpiresAt: "", kind: "start",
+    job: cloud
+      ? { id: randomUUID(), projectId, title: name, prompt: name, provider: "claude", runner: "claude-cloud", location: "cloud", checkoutPath: checkout, remote: origin }
+      : { id: randomUUID(), projectId, title: name, prompt: name, provider: "ollama", model: "fixture:latest", runner: "direct", location: "local", checkoutPath: "" } });
+  const l1 = make("L1", false), l2 = make("L2", false);
+  const clouds = [make("C1", true), make("C2", true), make("C3", true)];
+  const all = [l1, l2, ...clouds];
+  const localQueue = [l1, l2];
+  const cloudQueue = [...clouds];
+  const claims: { max: number; cloudMax?: number }[] = [];
+  const touched = new Set<string>();
+  const finished = new Set<string>();
+  const cloudCapacities = new Set<number | undefined>();
+  let mostActive = 0;
+  let fires = 0;
+  let requestError: unknown;
+  let releaseL1!: () => void;
+  const l1Done = new Promise<void>(resolve => { releaseL1 = resolve; });
+  const server = createServer(async (req, res) => {
+    try {
+      let data = "";
+      for await (const chunk of req) data += chunk;
+      const body: unknown = JSON.parse(data);
+      const respond = (value: object, code = 200) => {
+        res.writeHead(code, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(value));
+      };
+      if (req.url === NODE.heartbeat) {
+        const heartbeat = NodeHeartbeat.parse(body);
+        cloudCapacities.add(heartbeat.cloudCapacity);
+        mostActive = Math.max(mostActive, heartbeat.activeJobIds.length);
+        return respond({ nodeId: randomUUID(), serverTime: new Date().toISOString(), usageIntervalSec: 60, heartbeatIntervalSec: 1 });
+      }
+      if (req.url === NODE.usage || req.url === NODE.external) return respond({ accepted: 0 });
+      if (req.url === NODE.claim) {
+        const { max, cloudMax } = ClaimRequest.parse(body);
+        claims.push({ max, cloudMax });
+        // Hand out what was asked for, and once the cloud is full, a cloud job it didn't ask for too: the helper must leave that one.
+        const turns = [...localQueue.splice(0, max), ...cloudQueue.splice(0, cloudMax ?? 0)];
+        if (max > 0 && cloudMax === 0 && cloudQueue.length) turns.unshift(cloudQueue[0]!);
+        for (const turn of turns) turn.leaseExpiresAt = new Date(Date.now() + 3000).toISOString();
+        return respond({ turns });
+      }
+      const turn = all.find(item => req.url === NODE.lease(item.job.id) || req.url === NODE.events(item.job.id));
+      assert.ok(turn);
+      touched.add(turn.job.id);
+      if (req.url === NODE.lease(turn.job.id)) return respond({ cancel: false, leaseExpiresAt: new Date(Date.now() + 3000).toISOString() });
+      const events = JobEventsRequest.parse(body);
+      if (events.events.some(e => ["result", "error", "needs_input"].includes(e.type))) finished.add(turn.job.id);
+      return respond({ lastSeq: events.events.at(-1)?.seq });
+    } catch (error) {
+      requestError = error;
+      res.writeHead(500).end("{}");
+    }
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.close(); server.closeAllConnections(); });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const service = startNode({
+    serverUrl: `http://127.0.0.1:${address.port}`, token: "node-fixture", claimIntervalMs: 25, externalIntervalMs: 60_000,
+    handoffDir: false, checkoutRoots: [], capacity: 1,
+    system: { home, platform: "linux", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, GIT_CONFIG_NOSYSTEM: "1",
+      GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com" } },
+    fetch: async (url, init) => {
+      // The routine is fired; its session never pushes, so the job waits on the cloud.
+      if (String(url) === fire) {
+        fires++;
+        return Response.json({ type: "routine_fire", claude_code_session_id: `session_${fires}`, claude_code_session_url: `https://claude.ai/code/session_${fires}` });
+      }
+      if (String(url).startsWith("https://api.anthropic.com")) return new Response(await usageFixture());
+      if (String(url) === "http://127.0.0.1:11434/api/tags") return Response.json({ models: [{ model: "fixture:latest" }] });
+      if (String(url) === "http://127.0.0.1:11434/api/chat") {
+        const prompt = JSON.parse(String(init?.body)).messages[0].content as string;
+        if (prompt === "L1") await l1Done;
+        return Response.json({ done: true, message: { content: `${prompt} done.` } });
+      }
+      return fetch(url, init);
+    },
+  });
+  try {
+    const until = async (done: () => boolean, what: string) => {
+      for (let i = 0; i < 300 && !done(); i++) {
+        if (requestError) throw requestError;
+        await sleep(25);
+      }
+      assert.ok(done(), `${what}: ${JSON.stringify({ claims, fires, mostActive })}`);
+    };
+    // The one local slot is full (L1), and two cloud jobs still start.
+    await until(() => fires >= 2 && mostActive >= 3, "two cloud jobs beside a full local slot");
+    assert.deepEqual(claims[0], { max: 1, cloudMax: 2 });
+    assert.equal(finished.has(l1.job.id), false);
+    assert.deepEqual([...cloudCapacities], [2]);
+    // With both full, it doesn't ask for more.
+    const asked = claims.length;
+    await sleep(200);
+    assert.equal(claims.length, asked, "no claim while every slot is full");
+    // L1 finishes: L2 gets the local slot, and the third cloud job waits (the helper leaves it though the server handed it out).
+    releaseL1();
+    await until(() => finished.has(l2.job.id), "the local job behind the cloud jobs runs");
+    assert.ok(claims.some(c => c.max === 1 && c.cloudMax === 0), JSON.stringify(claims));
+    for (const c of claims.slice(1)) assert.ok((c.cloudMax ?? 0) === 0, `the cloud stayed full: ${JSON.stringify(claims)}`);
+    assert.equal(fires, 2, "the third cloud job never fired");
+    assert.equal(touched.has(clouds[2]!.job.id), false, "the third cloud job was left for its lease to run out");
+    assert.equal(mostActive, 3);
   } finally {
     await service.stop();
   }

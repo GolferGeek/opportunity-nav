@@ -79,6 +79,9 @@ A job runs only in a checkout whose origin is the project's repo, as Git will re
 If it isn't, the job ends at once and says why. A pushing job checks again right before it pushes, and fetches and pushes only the addresses it checked.
 
 A machine runs up to 3 jobs at once, each in its own worktree. Set `OPNAV_CAPACITY` (1 to 16) on the machine to change that.
+Jobs that run in a cloud (Claude's cloud, Cloudroom) have their own slots on top of those: up to 2 at once, set with `OPNAV_CLOUD_CAPACITY` (0 to 8).
+The machine only waits on them, so they never take a local slot, and a full cloud never holds up a local job. Bringing the cloud's work back in happens in the cloud slot too.
+Settings > Machines shows both, e.g. "Local 2 of 3 · cloud 1 of 2". A machine's job limit (set_machine) lowers its local slots only.
 Jobs in the same repo prepare their worktrees and push one at a time, so each push lands on top of the last.
 
 To restart or update a machine's helper without cutting a job off, stop it taking new jobs first:
