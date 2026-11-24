@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, needsText, providerName, runsOnText, type Need, type Priority, type TreeNode } from "./api.ts";
 import { ANY_MACHINE, keepWhere, whereOptions, whereToJob, type MachineLite, type Where } from "./where.ts";
+import { OTHER_MODEL, modelChoice, modelOptions, type RecentJob } from "./models.ts";
 
 export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: {
   node: TreeNode;
@@ -118,6 +119,13 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
   // The machines, and the repo of the node's project (what Claude's cloud routines are matched on).
   const [machines, setMachines] = useState<MachineLite[]>([]);
   const [repo, setRepo] = useState<string | null>(null);
+  // The user's recent jobs: the models each agent ran lately, for the model list.
+  const [recent, setRecent] = useState<RecentJob[]>([]);
+  useEffect(() => {
+    let live = true;
+    void api<RecentJob[]>("GET", "/api/jobs").then((j) => live && setRecent(j)).catch(() => {});
+    return () => { live = false; };
+  }, []);
   useEffect(() => {
     let live = true;
     setRepo(null);
@@ -139,11 +147,28 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
   useEffect(() => { if (chosen !== where) setWhere(chosen); }, [chosen, where]);
   const { runner, machineId } = whereToJob(chosen);
   const inCloud = runner !== "direct";
+  // The models to pick from: on the chosen machine, else on any machine (none count in a cloud).
+  const pool = useMemo(() => (inCloud ? [] : machineId ? machines.filter((m) => m.id === machineId) : machines), [inCloud, machineId, machines]);
+  const projectModel = provider === node.defaultProvider ? node.defaultModel : null;
+  const modelOpts = useMemo(() => modelOptions(provider, pool, recent, projectModel), [provider, pool, recent, projectModel]);
+  // "Other…" shows a box to type any id; so does a model that isn't in the list.
+  const [typing, setTyping] = useState(false);
+  const modelPick = typing ? OTHER_MODEL : modelChoice(model, modelOpts);
+  const pickProvider = (p: string) => {
+    setProvider(p);
+    // A model id belongs to one agent: a new agent starts at its default (or the project's model for it).
+    setModel(p === node.defaultProvider ? node.defaultModel ?? "" : "");
+    setTyping(false);
+  };
+  const pickModel = (v: string) => {
+    setTyping(v === OTHER_MODEL);
+    setModel(v === OTHER_MODEL ? "" : v);
+  };
   const go = async () => {
     if (!prompt.trim()) return;
     setBusy(true);
     try {
-      const j = await api("POST", "/api/jobs", { nodeId: node.id, prompt, provider, model: model || undefined,
+      const j = await api("POST", "/api/jobs", { nodeId: node.id, prompt, provider, model: model.trim() || undefined,
         location: inCloud ? "cloud" : location || undefined, runner, machineId, needs });
       onStarted(j.id);
     } catch (e) {
@@ -157,10 +182,16 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
       <textarea autoFocus rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="What should the agent do?"
         onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void go(); }} />
       <div className="row-buttons">
-        <select value={provider} onChange={(e) => setProvider(e.target.value)} aria-label="Agent">
+        <select value={provider} onChange={(e) => pickProvider(e.target.value)} aria-label="Agent">
           {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model (default)" aria-label="Model" />
+        <select value={modelPick} onChange={(e) => pickModel(e.target.value)} aria-label="Model"
+          title="Default model: the agent picks. The list is what your machines have and what this agent ran lately.">
+          {modelOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        {modelPick === OTHER_MODEL && (
+          <input autoFocus={typing} value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model id" aria-label="Model id" />
+        )}
         {/* Only Ollama and MLX can run their model on the machine itself; every other agent's model is in the cloud, so there's nothing to pick. */}
         {localModels && !inCloud && (
           <select value={location} onChange={(e) => setLocation(e.target.value)} aria-label="Model location">

@@ -16,7 +16,7 @@ export type MachineLite = {
   online?: boolean;
   takingJobs?: boolean;
   tools?: string[];
-  providers?: { provider: string; signedIn?: boolean; canRunJobs?: boolean }[];
+  providers?: { provider: string; signedIn?: boolean; canRunJobs?: boolean; models?: string[] }[];
   cloudroom?: { providers?: string[] } | null;
   claudeCloud?: { ready?: boolean; repos?: string[] } | null;
 };
