@@ -112,6 +112,7 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     await ok(node, "POST", "/api/node/heartbeat", hb("laptop"));
     const job = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "Add a healthz route" });
     assert.equal(job.provider, "claude");
+    assert.deepEqual(job.runsOn, { model: "default model", where: "local" }, "no model named or reported yet, no machine yet");
 
     const { turns } = await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] });
     assert.equal(turns.length, 1);
@@ -122,7 +123,12 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns.length, 0, "not handed out twice");
 
     const ev = (seq: number, e: object) => ({ seq, at: now(), ...e });
-    await ok(node, "POST", `/api/node/jobs/${job.id}/events`, { leaseId: t.leaseId, events: [ev(0, { type: "session", providerSessionId: "sess-1" }), ev(1, { type: "progress", text: "Reading the server" })] });
+    await ok(node, "POST", `/api/node/jobs/${job.id}/events`, { leaseId: t.leaseId, events: [ev(0, { type: "session", providerSessionId: "sess-1", model: "claude-sonnet-4-5-20250929" }), ev(1, { type: "progress", text: "Reading the server" })] });
+    // Every job view says the model the agent reported and the machine it runs on.
+    const running = { model: "claude-sonnet-4-5", where: "local on laptop" };
+    assert.deepEqual((await ok(ui, "GET", `/api/jobs/${job.id}`)).runsOn, running);
+    assert.deepEqual((await ok(ui, "GET", "/api/happening")).flatMap((g: any) => g.items).find((i: any) => i.jobId === job.id && i.kind === "job").runsOn, running);
+    assert.deepEqual((await ok(ui, "GET", "/api/lined-up")).running.find((r: any) => r.id === job.id).runsOn, running);
     // A retried batch is ignored.
     const again = await ok(node, "POST", `/api/node/jobs/${job.id}/events`, { leaseId: t.leaseId, events: [ev(1, { type: "progress", text: "dup" })] });
     assert.equal(again.lastSeq, 1);
@@ -288,6 +294,7 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     const done = await ok(ui, "GET", `/api/jobs/${job.id}`);
     assert.equal(done.status, "succeeded");
     assert.equal(done.claudeCloud.session, "session_test1");
+    assert.deepEqual(done.runsOn, { model: "default model", where: "cloud (Claude)" });
   });
 
   test("needs and location: a job that needs Docker or a database only goes to a machine that has them", async () => {

@@ -11,6 +11,7 @@ import {
   ProviderId,
   Runner,
   runsInCloud,
+  runsOn,
 } from "@opnav/shared";
 import type { Db, Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
@@ -134,6 +135,10 @@ export function jobLocation(provider: string, asked: Location | undefined, proje
 const PROVIDER_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", gemini: "Gemini", cursor: "Cursor", grokbot: "Grok Bot", grok: "Grok" };
 const providerLabel = (p: string) => PROVIDER_LABELS[p] ?? p;
 
+/** A jobs row (with its machine's name as `machine`), as the cards say it: model in plain words and where it runs. */
+export const runsOnRow = (r: any, machine: string | null = r.machine ?? null) =>
+  runsOn({ provider: r.provider, model: r.model, reportedModel: r.reported_model, runner: r.runner, machine });
+
 export function jobRow(r: any) {
   return {
     id: r.id as string,
@@ -142,6 +147,10 @@ export function jobRow(r: any) {
     prompt: r.prompt as string,
     provider: r.provider as string,
     model: r.model as string | null,
+    /** The model the agent reported running, if it did. */
+    reportedModel: (r.reported_model as string | null | undefined) ?? null,
+    /** For the job's cards: its model in plain words and where it runs ("local on Studio", "cloud (Claude)"). */
+    runsOn: runsOnRow(r),
     location: r.location as string,
     effort: r.effort as string | null,
     runner: (r.runner ?? "direct") as string,
@@ -335,7 +344,8 @@ async function applyEvent(tx: Db, userId: string, jobId: string, turnId: string,
   }
   switch (e.type) {
     case "session":
-      await tx`update jobs set provider_session_id = ${e.providerSessionId}, updated_at = now() where id = ${jobId}`;
+      await tx`update jobs set provider_session_id = ${e.providerSessionId}, reported_model = coalesce(${e.model ?? null}, reported_model),
+        updated_at = now() where id = ${jobId}`;
       return false;
     case "progress":
       await tx`update jobs set last_progress = ${e.text.slice(0, 500)}, updated_at = now() where id = ${jobId}`;

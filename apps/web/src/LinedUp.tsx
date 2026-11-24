@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ago, api, providerName, usePoll } from "./api.ts";
+import { ago, api, providerName, runsOnText, usePoll, type RunsOn } from "./api.ts";
 
 interface Next {
   id: string;
@@ -7,6 +7,7 @@ interface Next {
   app: string;
   provider: string;
   machine: string | null;
+  runsOn?: RunsOn;
   held: boolean;
   ready: boolean;
   why: string | null;
@@ -15,7 +16,7 @@ interface Next {
   resuming: boolean;
 }
 export interface Lined {
-  running: { id: string; title: string; app: string; provider: string; machine: string | null; startedAt: string | null }[];
+  running: { id: string; title: string; app: string; provider: string; machine: string | null; runsOn?: RunsOn; startedAt: string | null }[];
   next: Next[];
   total: { waiting: number; ready: number; held: number; running: number };
   perApp: { app: string; running: number; ready: number; waiting: number; held: number }[];
@@ -63,7 +64,7 @@ export function LinedUp({ onOpenJob, onError }: { onOpenJob: (id: string) => voi
           <li key={n.id} className={n.held ? "held" : n.ready ? "" : "blocked"}>
             <button className="link" onClick={() => onOpenJob(n.id)}>{n.title}</button>
             <div className="muted small">
-              {n.app} · {providerName(n.provider)}{n.machine ? ` · ${n.machine}` : ""}
+              {n.app} · {providerName(n.provider)}{n.runsOn ? ` · ${runsOnText(n.runsOn)}` : n.machine ? ` · ${n.machine}` : ""}
               {n.held ? " · on hold" : n.ready ? "" : n.why ? ` · ${n.why}` : ""}
             </div>
             {all && n.backlog && !n.resuming && (
@@ -90,7 +91,7 @@ export function LinedUp({ onOpenJob, onError }: { onOpenJob: (id: string) => voi
               <li key={m.name}>{m.name}: {m.cloudSlots == null ? `${m.running} of ${m.slots} running` : `local ${m.running} of ${m.slots} · cloud ${m.cloudRunning} of ${m.cloudSlots}`}{m.takingJobs ? "" : " · not taking jobs"} · {m.canTake} ready it can take</li>
             ))}
           </ul>
-          {data.running.length > 0 && <div className="muted small">Running: {data.running.map((r) => `${r.title} (${r.machine ?? "?"}, ${ago(r.startedAt)})`).join(" · ")}</div>}
+          {data.running.length > 0 && <div className="muted small">Running: {data.running.map((r) => `${r.title} (${r.runsOn ? runsOnText(r.runsOn) : r.machine ?? "?"}, ${ago(r.startedAt)})`).join(" · ")}</div>}
         </>
       )}
     </div>

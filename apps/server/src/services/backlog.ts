@@ -4,7 +4,7 @@ import type { Db, Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
 import { runningCounts } from "./machines.ts";
 import { listTree, normaliseRemote, pathOf } from "./tree.ts";
-import { checkJobShape, jobLocation, jobRow } from "./jobs.ts";
+import { checkJobShape, jobLocation, jobRow, runsOnRow } from "./jobs.ts";
 
 /**
  * The backlog: one ranked list of jobs that machines pull from by themselves.
@@ -451,6 +451,7 @@ export async function linedUp(db: Db, userId: string, opts: { next?: number; all
     return {
       id: r.id, title: r.title, app: appOf(r, rk), project: pathOf(byId, r.project_id).join(" / "),
       backlog: Boolean(r.backlog), provider: r.provider, model: r.model ?? null, machine: r.node_id ? r.machine ?? null : null,
+      runsOn: runsOnRow(r, r.node_id ? r.machine ?? null : null),
       push: Boolean(r.push), branch: r.branch ?? null, localModel: Boolean(r.local_model), after: r.after, held: Boolean(r.held),
       key: r.key ?? null, resuming: r.kind === "continue",
       /** Ready = it would start as soon as one of these machines has a free slot. */
@@ -461,7 +462,7 @@ export async function linedUp(db: Db, userId: string, opts: { next?: number; all
   const running = runningRows.map((r) => ({
     id: r.id, title: r.title, app: appOf(r as any, rk), project: pathOf(byId, r.project_id).join(" / "),
     provider: r.provider, model: r.model ?? null, machine: r.machine ?? null, startedAt: r.started_at, lastProgress: r.last_progress ?? null,
-    backlog: Boolean(r.backlog),
+    backlog: Boolean(r.backlog), runsOn: runsOnRow(r),
   }));
 
   const perApp = new Map<string, { app: string; running: number; ready: number; waiting: number; held: number }>();

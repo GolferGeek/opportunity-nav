@@ -113,6 +113,10 @@ export const PROVIDERS: { id: string; name: string }[] = [
   { id: "mlx", name: "MLX" },
 ];
 const OTHER_NAMES: Record<string, string> = { gemini: "Gemini CLI" };
+/** A job's model in plain words and where it runs, as the server says it ("claude-opus-4-5 · local on Studio"). */
+export interface RunsOn { model: string; where: string }
+export const runsOnText = (r?: RunsOn | null) => (r ? `${r.model} · ${r.where}` : "");
+
 export const providerName = (id: string) => PROVIDERS.find((p) => p.id === id)?.name ?? OTHER_NAMES[id] ?? id;
 
 export function ago(d: string | Date | null | undefined): string {

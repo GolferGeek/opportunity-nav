@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ago, api, providerName } from "./api.ts";
+import { ago, api, providerName, runsOnText, type RunsOn } from "./api.ts";
 import { ProjectLabel } from "./ProjectLabel.tsx";
 
 export interface Item {
@@ -16,6 +16,7 @@ export interface Item {
   provider?: string;
   model?: string | null;
   machine?: string | null;
+  runsOn?: RunsOn;
   url?: string | null;
   source?: string;
 }
@@ -113,7 +114,7 @@ function Card({ it, group, onChanged, onOpenJob, onOpenExternal, onSelect, onErr
       <button className="card job clickable" onClick={() => onOpenJob(it.id)}>
         <div className="tag">
           <span className={`dot ${it.status}`} /> {it.status === "queued" ? "Waiting for a machine" : "Working"} · {providerName(it.provider ?? "")}
-          {it.model ? ` · ${it.model}` : ""}{it.machine ? ` · ${it.machine}` : ""}
+          {it.runsOn ? ` · ${runsOnText(it.runsOn)}` : `${it.model ? ` · ${it.model}` : ""}${it.machine ? ` · ${it.machine}` : ""}`}
         </div>
         <div className="body">{it.title}</div>
         {it.detail && <div className="detail">{it.detail}</div>}

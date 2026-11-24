@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, providerName, type Need, type Priority, type TreeNode } from "./api.ts";
+import { ago, api, LOCAL_MODEL_PROVIDERS, NEEDS, PRIORITIES, PROVIDERS, providerName, runsOnText, type Need, type Priority, type TreeNode } from "./api.ts";
 
 export function Detail({ node, path, onChanged, onOpenJob, onError, onSelect }: {
   node: TreeNode;
@@ -190,7 +190,7 @@ function RecentJobs({ nodeId, onOpenJob }: { nodeId: string; onOpenJob: (id: str
         {jobs.slice(0, 8).map((j) => (
           <li key={j.id}>
             <button className="link" onClick={() => onOpenJob(j.id)}>{j.title}</button>
-            <span className="muted"> · {j.status} · {providerName(j.provider)}{j.machine ? ` · ${j.machine}` : ""} · {ago(j.updatedAt)}</span>
+            <span className="muted"> · {j.status} · {providerName(j.provider)}{j.runsOn ? ` · ${runsOnText(j.runsOn)}` : j.machine ? ` · ${j.machine}` : ""} · {ago(j.updatedAt)}</span>
           </li>
         ))}
       </ul>

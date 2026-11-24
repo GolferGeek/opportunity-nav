@@ -1,4 +1,5 @@
-import { readingIsCurrent } from "@opnav/shared";
+import { readingIsCurrent, type RunsOn } from "@opnav/shared";
+import { runsOnRow } from "./jobs.ts";
 import type { Db } from "../db.ts";
 import { byPriority, listTree, pathOf, type TreeNode } from "./tree.ts";
 
@@ -21,6 +22,8 @@ export interface HappeningItem {
   provider?: string;
   model?: string | null;
   machine?: string | null;
+  /** A job's model in plain words and where it runs. */
+  runsOn?: RunsOn;
   url?: string | null;
   source?: string;
 }
@@ -68,7 +71,7 @@ export async function happening(db: Db, userId: string, scopeId?: string): Promi
   for (const j of jobs)
     add(j.project_id, {
       kind: "job", id: j.id, title: j.title, detail: j.last_progress, status: j.status, at: j.updated_at, jobId: j.id,
-      provider: j.provider, model: j.model, machine: j.machine,
+      provider: j.provider, model: j.model, machine: j.machine, runsOn: runsOnRow(j),
     });
   for (const w of external)
     add(w.project_id, {
