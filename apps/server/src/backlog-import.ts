@@ -10,8 +10,8 @@
  *
  * So the old dispatchers and the backlog can't both start a brief, --apply
  * first moves the brief out of the folder the dispatchers read (to --move-to,
- * default <handoff>/backlog/). A dispatcher moves a brief to working/ with mv
- * and skips it if it's gone, so whoever moves it first owns it. If the backlog
+ * default <handoff>/backlog/). The move is one rename, and a dispatcher moves a
+ * brief to working/ with mv and skips it if it's gone, so whoever moves it first owns it. If the backlog
  * refuses it, the brief goes back where it was.
  *
  * Mapping, the same as the routed dispatcher's:
@@ -28,7 +28,7 @@
  * Never prints the token.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -204,8 +204,8 @@ async function main() {
     }
     const dest = join(moveTo, basename(p.file));
     try {
-      linkSync(p.file, dest); // fails if the dispatcher took it meanwhile, or it's already there
-      unlinkSync(p.file);
+      if (existsSync(dest)) throw Object.assign(new Error("already moved"), { code: "EEXIST" });
+      renameSync(p.file, dest); // atomic: fails with ENOENT if a dispatcher took it first
     } catch (e) {
       console.log(`skip  ${p.name}: couldn't take it from ${p.file} (${(e as NodeJS.ErrnoException).code}); the old queue may have started it`);
       continue;
@@ -215,7 +215,7 @@ async function main() {
       console.log(`added ${p.name} → job ${job.id}  [${where}]`);
       imported.add(p.name.toLowerCase());
     } catch (e) {
-      try { linkSync(dest, p.file); unlinkSync(dest); } catch {}
+      try { if (!existsSync(p.file)) renameSync(dest, p.file); } catch {}
       console.log(`refused ${p.name}: ${(e as Error).message} (left where it was)`);
     }
   }
