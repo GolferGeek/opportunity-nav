@@ -49,6 +49,8 @@ export function workerArgs(turn: Turn, autonomy: Autonomy = "edit", claudeSandbo
     const permissions = autonomy === "full" ? ["--dangerously-skip-permissions"] : [
       "--permission-mode", "acceptEdits",
       ...(claudeSandbox || hidden.length ? ["--settings", JSON.stringify({
+        // In Claude's permission rules "//path" is an absolute path ("/path" is relative to the project), so
+        // "/" + an absolute dir gives "//Users/…". Checked with Claude Code 2.1.330: the Read tool is refused.
         ...(hidden.length ? { permissions: { deny: hidden.flatMap(dir => [`Read(/${dir})`, `Read(/${dir}/**)`]) } } : {}),
         ...(claudeSandbox ? { sandbox: {
           enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
