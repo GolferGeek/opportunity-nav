@@ -119,6 +119,8 @@ export interface Offer {
   providers: string[];
   cloudroomProviders: string[];
   claudeCloud: boolean;
+  /** The repos its Claude routine covers (normaliseRemote form). A Claude cloud job goes only to a machine covering its repo. */
+  claudeCloudRepos: string[];
   tools: string[];
   checkouts: OfferedCheckout[];
   /** It has its own local models (Ollama). */
@@ -154,6 +156,9 @@ export function checkoutFor(r: QueuedRow, m: Offer): { path: string; branch: str
     : r.runner === "claude-cloud" ? r.provider === "claude" && m.claudeCloud
     : false;
   if (!agentOk) return { why: `no ${r.runner === "direct" ? "" : `${r.runner} `}${r.provider}` };
+  if (r.runner === "claude-cloud" && !(r.repo_remote && m.claudeCloudRepos.includes(normaliseRemote(r.repo_remote)))) {
+    return { why: "its Claude routine doesn't cover the repo" };
+  }
   if (r.runner === "direct" && !r.needs.every((n) => m.tools.includes(n))) return { why: `needs ${r.needs.join(", ")}` };
   if (r.local_model && !m.localModels) return { why: "no local models" };
   if (r.kind === "continue" && r.checkout_path) return { path: r.checkout_path, branch: r.checkout_branch };
@@ -383,6 +388,7 @@ export async function onlineMachines(db: Db, userId: string): Promise<MachineVie
         providers: providers.filter((p) => p.canRunJobs && p.signedIn).map((p) => p.provider),
         cloudroomProviders: (r.cloudroom?.providers ?? []) as string[],
         claudeCloud: Boolean(r.claude_cloud?.ready),
+        claudeCloudRepos: ((r.claude_cloud?.repos ?? []) as string[]).map(normaliseRemote),
         tools: (r.tools ?? []) as string[],
         checkouts: (r.checkouts ?? []) as Offer["checkouts"],
         localModels: hasLocalModels(providers),

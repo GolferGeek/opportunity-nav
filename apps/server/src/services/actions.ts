@@ -114,6 +114,7 @@ export const actions = {
           jobs: { atOnce: m.capacity, running: m.runningLocal, takingJobs: m.takingJobs,
             inCloud: m.cloudCapacity == null ? null : { atOnce: m.cloudCapacity, running: m.runningCloud } },
           claudeCloud: m.claudeCloud?.ready ? "ready" : m.claudeCloud?.reason ?? "not set up",
+          ...(m.claudeCloud?.ready ? { claudeCloudRepos: m.claudeCloud.repos ?? [] } : {}),
         }));
     },
   },
@@ -123,7 +124,7 @@ export const actions = {
     run: (sql: Sql, userId: string, i: any, by: string) => answerQuestion(sql, userId, i.questionId, i.answer, by),
   },
   start_job: {
-    description: "Start an agent on a task in a project. Provider, model and location default to the project's settings. Any online machine with the agent and the repo picks it up; set machine to choose one, and needs if it must have Docker or a test database. Name the project by item, or by repo (its git remote). Set push to land the work on the branch the machine's checkout is on and push it; otherwise it stays on the job's own branch, unpushed. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch). Set runner \"claude-cloud\" to run Claude in Claude's own cloud through the person's Claude Code routine (only on a machine where list_machines says claudeCloud is ready; it starts from the checkout's branch on origin, can take up to 45 minutes, and is tried once more if nothing comes back).",
+    description: "Start an agent on a task in a project. Provider, model and location default to the project's settings. Any online machine with the agent and the repo picks it up; set machine to choose one, and needs if it must have Docker or a test database. Name the project by item, or by repo (its git remote). Set push to land the work on the branch the machine's checkout is on and push it; otherwise it stays on the job's own branch, unpushed. Set runner \"cloudroom\" to run it in a Cloudroom cloud sandbox (Claude, Codex or Antigravity; it starts from the repo's default branch on GitHub and pushes its work to a branch). Set runner \"claude-cloud\" to run Claude in Claude's own cloud through the person's Claude Code routine (only on a machine where list_machines says claudeCloud is ready and claudeCloudRepos has the repo; it starts from the checkout's branch on origin, can take up to 45 minutes, and is tried once more if nothing comes back).",
     input: z.object({
       item: Ref.optional().describe("The project (or an item inside it) to work on. Or give repo instead."),
       repo: z.string().min(1).optional().describe("The project's git remote, e.g. github.com/owner/name, when item isn't given"),

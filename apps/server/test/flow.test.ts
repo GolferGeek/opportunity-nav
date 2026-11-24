@@ -283,8 +283,15 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"], cloudroomProviders: ["claude"] })).turns.length, 0);
     const machines = await ok(ui, "GET", "/api/machines");
     assert.deepEqual(machines.find((m: any) => m.name === "laptop").claudeCloud, { ready: false, reason: "not set up" });
-    await ok(node2, "POST", "/api/node/heartbeat", { ...hb("studio"), claudeCloud: { ready: true } });
-    const [t] = (await ok(node2, "POST", "/api/node/jobs/claim", { providers: [], claudeCloud: true })).turns;
+    await ok(node2, "POST", "/api/node/heartbeat", { ...hb("studio"), claudeCloud: { ready: true, repos: ["github.com/GolferGeek/opportunity-nav"] } });
+    // A routine that doesn't cover the job's repo (or a helper that doesn't say which it covers) gets nothing.
+    assert.equal((await ok(node2, "POST", "/api/node/jobs/claim", { providers: [], claudeCloud: true })).turns.length, 0);
+    assert.equal((await ok(node2, "POST", "/api/node/jobs/claim", { providers: [], claudeCloud: true,
+      claudeCloudRepos: ["github.com/GolferGeek/other"] })).turns.length, 0);
+    const studio = (await ok(ui, "GET", "/api/machines")).find((m: any) => m.name === "studio");
+    assert.deepEqual(studio.claudeCloud, { ready: true, repos: ["github.com/golfergeek/opportunity-nav"] });
+    const [t] = (await ok(node2, "POST", "/api/node/jobs/claim", { providers: [], claudeCloud: true,
+      claudeCloudRepos: ["github.com/GolferGeek/Opportunity-Nav"] })).turns;
     assert.equal(t.job.id, job.id);
     assert.equal(t.job.runner, "claude-cloud");
     assert.equal(t.job.push, true);
@@ -697,14 +704,14 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     const box = (await createToken(sql, userId, "node", "cloud box")).token;
     const remote = "https://github.com/example/cloudslots";
     await ok(box, "POST", "/api/node/heartbeat", {
-      ...hb("cloudbox"), checkouts: [{ path: "/home/cloudbox/cloudslots", remote }], capacity: 2, cloudCapacity: 2, claudeCloud: { ready: true },
+      ...hb("cloudbox"), checkouts: [{ path: "/home/cloudbox/cloudslots", remote }], capacity: 2, cloudCapacity: 2, claudeCloud: { ready: true, repos: [remote] },
     });
     const project = await ok(ui, "POST", "/api/tree", { kind: "project", title: "Cloud slots", repoRemote: remote, defaultProvider: "claude" });
     const start = (prompt: string, runner = "direct") => ok(ui, "POST", "/api/jobs", { nodeId: project.id, prompt, runner });
     const local = [await start("Local 1"), await start("Local 2")];
     const cloud = [await start("Cloud 1", "claude-cloud"), await start("Cloud 2", "claude-cloud"), await start("Cloud 3", "claude-cloud")];
     const local3 = await start("Local 3");
-    const claimNow = (max: number, cloudMax: number) => ok(box, "POST", "/api/node/jobs/claim", { providers: ["claude"], claudeCloud: true, max, cloudMax });
+    const claimNow = (max: number, cloudMax: number) => ok(box, "POST", "/api/node/jobs/claim", { providers: ["claude"], claudeCloud: true, claudeCloudRepos: [remote], max, cloudMax });
     const finish = (t: any) => ok(box, "POST", `/api/node/jobs/${t.job.id}/events`, { leaseId: t.leaseId, events: [{ seq: 0, at: now(), type: "result", summary: "Done" }] });
 
     // The local slots fill with local jobs.

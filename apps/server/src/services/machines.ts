@@ -5,10 +5,11 @@ import { listTree, normaliseRemote } from "./tree.ts";
 /** Register or refresh the machine behind a node token. */
 export async function heartbeat(db: Db, userId: string, tokenId: string, hb: NodeHeartbeat): Promise<string> {
   const checkouts = hb.checkouts.map((c) => ({ ...c, remote: c.remote ? normaliseRemote(c.remote) : undefined }));
+  const claudeCloud = hb.claudeCloud && { ...hb.claudeCloud, ...(hb.claudeCloud.repos ? { repos: [...new Set(hb.claudeCloud.repos.map(normaliseRemote))] } : {}) };
   const [r] = await db<{ id: string }[]>`
     insert into nodes (user_id, token_id, hostname, name, platform, arch, helper_version, providers, checkouts, handoff, autonomy, cloudroom, claude_cloud, tools, capacity, cloud_capacity, last_seen_at)
     values (${userId}, ${tokenId}, ${hb.hostname}, ${hb.name ?? hb.hostname}, ${hb.platform}, ${hb.arch}, ${hb.helperVersion},
-            ${db.json(hb.providers as any)}, ${db.json(checkouts as any)}, ${hb.handoff ? db.json(hb.handoff as any) : null}, ${hb.autonomy}, ${hb.cloudroom ? db.json(hb.cloudroom as any) : null}, ${hb.claudeCloud ? db.json(hb.claudeCloud as any) : null}, ${db.json([...new Set(hb.tools)])}, ${hb.capacity ?? 1}, ${hb.cloudCapacity ?? null}, now())
+            ${db.json(hb.providers as any)}, ${db.json(checkouts as any)}, ${hb.handoff ? db.json(hb.handoff as any) : null}, ${hb.autonomy}, ${hb.cloudroom ? db.json(hb.cloudroom as any) : null}, ${claudeCloud ? db.json(claudeCloud as any) : null}, ${db.json([...new Set(hb.tools)])}, ${hb.capacity ?? 1}, ${hb.cloudCapacity ?? null}, now())
     on conflict (token_id) do update set hostname = excluded.hostname, name = coalesce(nullif(${hb.name ?? ""}, ''), nodes.name),
       platform = excluded.platform, arch = excluded.arch, helper_version = excluded.helper_version,
       providers = excluded.providers, checkouts = excluded.checkouts, handoff = excluded.handoff, autonomy = excluded.autonomy, cloudroom = excluded.cloudroom, claude_cloud = excluded.claude_cloud, tools = excluded.tools, capacity = excluded.capacity, cloud_capacity = excluded.cloud_capacity, last_seen_at = now()
@@ -37,8 +38,8 @@ export async function listMachines(db: Db, userId: string) {
     handoff: r.handoff,
     autonomy: r.autonomy,
     cloudroom: r.cloudroom as { providers: string[] } | null,
-    /** Claude's cloud through a routine: ready, or why not ("not set up"). Null when the helper doesn't say. */
-    claudeCloud: r.claude_cloud as { ready: boolean; reason?: string } | null,
+    /** Claude's cloud through a routine: ready, or why not ("not set up"), and the repos it covers. Null when the helper doesn't say. */
+    claudeCloud: r.claude_cloud as { ready: boolean; reason?: string; repos?: string[] } | null,
     tools: (r.tools ?? []) as string[],
     /** Jobs it runs at once (its helper's capacity, or its owner's lower limit), and how many it's running now. */
     capacity: Math.min(Number(r.capacity ?? 1), r.job_limit == null ? Infinity : Number(r.job_limit)),

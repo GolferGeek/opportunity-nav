@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Location, MachineTool, ProviderId } from "@opnav/shared";
+import { Location, MachineTool, ProviderId, repoIdentity } from "@opnav/shared";
 import type { Db } from "../db.ts";
 import { HttpError } from "../errors.ts";
 
@@ -62,12 +62,16 @@ export const TreeNodePatch = z.object({
   archived: z.boolean().optional(),
 });
 
-/** "git@github.com:A/B.git", "https://github.com/A/B" → "github.com/A/B". */
+/**
+ * A repo as the server stores and compares it (repoIdentity): "git@github.com:A/B.git" and
+ * "https://github.com/A/B" → "github.com/a/b" (GitHub ignores case); any other host keeps the
+ * path's case, so two repos there that differ only in case stay two repos.
+ */
 export function normaliseRemote(remote: string): string {
-  let r = remote.trim();
-  r = r.replace(/^[a-z+]+:\/\//i, "").replace(/^[^@/]+@/, "");
-  r = r.replace(/^([^/:]+):(?!\d)/, "$1/");
-  return r.replace(/\.git$/i, "").replace(/\/+$/, "").toLowerCase();
+  const known = repoIdentity(remote, { serverForm: true });
+  if (known) return known;
+  // Not an address we know (e.g. "owner/repo"): kept as given, case and all, so it matches only itself.
+  return remote.trim().replace(/^[a-z+]+:\/\//i, "").replace(/^[^@/]+@/, "").replace(/\.git$/i, "").replace(/\/+$/, "");
 }
 
 const row = (r: any): TreeNode => ({

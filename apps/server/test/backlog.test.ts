@@ -31,7 +31,7 @@ describe("which checkout a job runs in", () => {
   const home = "/Users/golfergeek";
   // The Studio as it was on 2026-11-23: many hand-made worktrees of a repo, which sort before its own checkout by path.
   const studio: Offer = {
-    id: "studio", providers: ["claude"], cloudroomProviders: [], claudeCloud: false, tools: [], localModels: false,
+    id: "studio", providers: ["claude"], cloudroomProviders: [], claudeCloud: false, claudeCloudRepos: [], tools: [], localModels: false,
     checkouts: [
       { path: `${home}/projects/agents-only`, remote: agents, branch: "main", linked: false, defaultBranch: "main" },
       { path: `${home}/projects/agents-only-worktrees/bridge-reads`, remote: agents, branch: "feat/bridge-read-only-summaries", linked: true, defaultBranch: "main" },
@@ -69,5 +69,24 @@ describe("which checkout a job runs in", () => {
     const old: Offer = { ...studio, checkouts: studio.checkouts.map(({ linked: _l, defaultBranch: _d, ...c }) => c) };
     assert.deepEqual(checkoutFor(row("l", { repo_remote: legal, push: true }), old),
       { path: `${home}/projects/orchestratorai/orchestratorai-local`, branch: "main" });
+  });
+
+  test("repos compare by one rule: GitHub ignores case, other hosts don't", () => {
+    const box: Offer = { ...studio, checkouts: [
+      { path: "/w/gh", remote: "github.com/GolferGeek/Opportunity-Nav", branch: "main", defaultBranch: "main" },
+      { path: "/w/self", remote: "git.example.com/Team/Repo", branch: "main", defaultBranch: "main" },
+    ] };
+    assert.deepEqual(checkoutFor(row("g", { repo_remote: "github.com/golfergeek/opportunity-nav" }), box), { path: "/w/gh", branch: "main" });
+    assert.deepEqual(checkoutFor(row("s", { repo_remote: "git.example.com/Team/Repo" }), box), { path: "/w/self", branch: "main" });
+    assert.deepEqual(checkoutFor(row("s", { repo_remote: "git.example.com/team/repo" }), box), { why: "no checkout of the repo" });
+  });
+
+  test("a Claude cloud job goes only to a machine whose routine covers its repo", () => {
+    const box: Offer = { ...studio, claudeCloud: true, claudeCloudRepos: ["github.com/orchestratorai-io/orchestratorai-local"] };
+    assert.deepEqual(checkoutFor(row("c", { repo_remote: legal, runner: "claude-cloud" }), box),
+      { path: `${home}/projects/orchestratorai/orchestratorai-local`, branch: "main" });
+    assert.deepEqual(checkoutFor(row("c", { repo_remote: agents, runner: "claude-cloud" }), box), { why: "its Claude routine doesn't cover the repo" });
+    assert.deepEqual(checkoutFor(row("c", { repo_remote: legal, runner: "claude-cloud", kind: "continue", checkout_path: "/x" }), { ...box, claudeCloudRepos: [] }),
+      { why: "its Claude routine doesn't cover the repo" });
   });
 });

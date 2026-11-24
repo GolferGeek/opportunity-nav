@@ -115,17 +115,18 @@ function StartJob({ node, onStarted, onError }: { node: TreeNode; onStarted: (id
   const [busy, setBusy] = useState(false);
   // Machines that can hand jobs to Cloudroom, and which agents they can run there.
   const [cloudroom, setCloudroom] = useState<string[]>([]);
-  // Whether an online machine has its Claude Code routine set up, for Claude in Claude's cloud.
+  // Whether an online machine has its Claude Code routine set up for this repo, for Claude in Claude's cloud.
   const [claudeCloud, setClaudeCloud] = useState(false);
   useEffect(() => {
     let live = true;
     void api<any[]>("GET", "/api/machines").then((ms) => {
       if (!live) return;
       setCloudroom([...new Set(ms.filter((m) => m.online && m.cloudroom).flatMap((m) => m.cloudroom.providers as string[]))]);
-      setClaudeCloud(ms.some((m) => m.online && m.claudeCloud?.ready));
+      // Only a routine that covers this project's repo can run it (the server matches the same way).
+      setClaudeCloud(ms.some((m) => m.online && m.claudeCloud?.ready && (!node.repoRemote || (m.claudeCloud.repos ?? []).includes(node.repoRemote))));
     }).catch(() => {});
     return () => { live = false; };
-  }, []);
+  }, [node.repoRemote]);
   useEffect(() => {
     if (runner === "cloudroom" && !cloudroom.includes(provider) || runner === "claude-cloud" && provider !== "claude") setRunner("direct");
   }, [provider, cloudroom, runner]);

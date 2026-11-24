@@ -15,7 +15,7 @@ import {
 } from "@opnav/shared";
 import type { Db, Sql } from "../db.ts";
 import { HttpError } from "../errors.ts";
-import { getNode, listTree, projectOf } from "./tree.ts";
+import { getNode, listTree, normaliseRemote, projectOf } from "./tree.ts";
 import { checkoutFor, hasLocalModels, heldBack, loadBusy, loadRanking, markBusy, orderQueue, placeInApp, queuedRows, slotsView, turnBlocked, type Offer, type OfferedCheckout } from "./backlog.ts";
 
 export const MAX_ATTEMPTS = 3;
@@ -212,6 +212,7 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
     if (free.local <= 0 && free.cloud <= 0) return [];
     const offer: Offer = {
       id: machineId, providers: req.providers, cloudroomProviders: req.cloudroomProviders, claudeCloud: req.claudeCloud,
+      claudeCloudRepos: req.claudeCloud ? (req.claudeCloudRepos ?? []).map(normaliseRemote) : [],
       tools: machine.tools ?? [], checkouts: machine.checkouts ?? [], localModels: hasLocalModels(machine.providers ?? []),
     };
     const rows = orderQueue(await queuedRows(tx, userId), await loadRanking(tx, userId));
