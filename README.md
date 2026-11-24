@@ -16,7 +16,7 @@ One app, three pieces:
   - Antigravity's Claude and GPT allowances don't count, since a review runs its default Gemini model.
   - Antigravity takes a fair share: with no reading for its Gemini model, it counts as half left.
   - A reading that isn't current (its last check failed, it needs a sign-in, or it's over 30 minutes old) ranks below every current one. The reply says how old it is. The dashboard marks it "Not current".
-  - If no online machine with a free slot can run that agent (with the repo, and any Docker or database the job needs), the other one goes. A machine's helper runs one job at a time unless it says otherwise.
+  - If no online machine with a free slot can run that agent (with the repo, and any Docker or database the job needs), the other one goes. A machine's helper runs up to 3 jobs at once unless it says otherwise (see Jobs).
   - A reading belongs to the machine and account it came from. The usage that counts is the account a free machine is signed in to. If the machines that run the agent aren't all on that account, the review goes to that machine.
   - An agent with 0% left never gets a review. If both are at 0%, the review is refused and the reply says why.
   - A review doesn't inherit the project's default model unless it goes to the project's default agent.
@@ -65,9 +65,24 @@ Create an agent token in **Settings → Connect an agent**. Give the agent the c
 
 ## Jobs
 
-Start a job from any project: pick the agent, the model, and local or cloud. A machine that has the project's repo checked out and that agent signed in picks it up. If the agent needs you, the job stops with a question in **What's happening**. Your answer resumes the same session on the same machine.
+Start a job from any project or item with **Start a job**. The form starts from the project's defaults (agent, model, needs); an item uses its project's.
+- **Agent**: the project's default is marked.
+- **Model**: a list for that agent. Its default comes first, then the models your machines have (for Ollama, only what's pulled), Claude's opus, sonnet and haiku (each its newest), and models the agent ran lately. **Other…** takes any model id.
+- **Where it runs**: **Any machine** (the default), **On <machine>**, **In Claude's cloud** or **In Cloudroom's cloud**.
+  - Only machines online and taking jobs are listed. One that can't run the job is greyed out and says why: no agent, no repo checkout, a missing need, or no job slots.
+  - Claude's cloud shows only when a machine's routine covers the project's repo, and is for Claude only. Its model is the routine's, set in Claude.
+  - Cloudroom shows only when a machine has it.
+  - A choice that stops fitting goes back to Any machine.
+- **Model location** (local or cloud model) shows only for Ollama and MLX, on a machine. Every other agent's model runs in its provider's cloud.
+- **Needs** (Docker, a test database): only a machine that has them takes the job.
 
-Coding jobs run in a separate Git worktree on branch `opnav/<first 8 characters of the job ID>`. Workers commit there and never push.
+A machine that fits picks it up. If the agent needs you, the job stops with a question in **What's happening**. Your answer resumes the same session on the same machine.
+
+**Unattended items.** An item no queued, running or waiting job was started from is unattended: a faint ○ marks it in the tree. Opening it opens the new-job form by itself, already holding the item's name and notes. Pick where it runs, the agent and the model, then Start. Close the form and it stays closed for that visit. Jobs remember the item they were started from (migration 020). A job still running from before that marks every item in its project as attended, so none of them invites duplicate work. An item's page and What's happening show the jobs started from it.
+
+Every job view says the model and where it runs, e.g. "claude-sonnet-4-5 · local on Studio" or "default model · cloud (Claude)".
+
+Coding jobs run in a separate Git worktree on branch `opnav/<first 8 characters of the job ID>`. Workers commit there and never push themselves. Anything an agent leaves uncommitted when its turn ends, the helper commits for it ("… left these changes uncommitted"), unless the turn was cancelled.
 
 When a job's worktree is new, the helper installs the repo's packages before the agent starts, so the agent can run the repo's tests:
 - npm (`package-lock.json`): `npm ci --offline --ignore-scripts`. pnpm (`pnpm-lock.yaml`): `pnpm install --offline --frozen-lockfile --ignore-scripts`.
@@ -119,11 +134,11 @@ How much a job can do on a machine is that machine's choice (`OPNAV_WORKER_AUTON
 
 ## The backlog
 
-Add work to one ranked backlog (`add_to_backlog`, `set_app_ranking`) and machines pull the next item themselves when they have room, keeping the rules: on hold, waiting on another item, one local-model job per machine, one pushing job per repo and branch. `get_lined_up` (and Lined up on the Dashboard) says what's running, what's next, what's left and whether it's running low. See [docs/backlog.md](docs/backlog.md), including how to bring in the handoff hold folders.
+Add work to one ranked backlog (`add_to_backlog`, `set_app_ranking`) and machines pull the next item themselves when they have room, keeping the rules: on hold, waiting on another item, one local-model job per machine, one pushing job at a time per landing branch. `get_lined_up` (and **Waiting to start** on the Dashboard) says what's running, what's next, what's left and whether it's running low. See [docs/backlog.md](docs/backlog.md), including how to bring in the handoff hold folders.
 
 ## Running jobs in Cloudroom
 
-A job can run on your own machine (the default) or in Cloudroom's cloud sandbox. A machine with the Cloudroom app installed and signed in offers the cloud option automatically.
+A job can run on your own machine (the default) or in Cloudroom's cloud sandbox. A machine with the Cloudroom app installed and signed in (and a free cloud slot) adds **In Cloudroom's cloud** to **Where it runs** by itself.
 
 - It runs Claude Code, Codex or Antigravity on your own subscription.
 - It starts from the repo's default branch on GitHub, so unpushed local changes aren't there.

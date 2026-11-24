@@ -15,9 +15,11 @@ An item is held back, wherever it sits, while:
 - it's **on hold** (`held: true`). A held item never starts.
 - it **waits on another item** (`after`) that hasn't succeeded. `after` can name another item's `key`, a job id, or a handoff brief's name. A brief still in the old queue counts once the Studio's handoff watcher sees its report in `done/`.
 - it **uses local models** (`localModel: true`) and another local-model job runs on that machine. Only a machine with Ollama models takes one. On Matt's setup that's the Studio: one local-model job at a time.
-- it **pushes** (`push: true`) and another pushing job is running for the same repo and branch.
+- it **pushes** (`push: true`) and another pushing job may land on the same branch of the same repo.
+  - One that names its `branch` waits for a pushing job on that branch, or one landing on the repo's default branch.
+  - One that names none lands on the default branch, which only the machine knows for sure, so it waits for any pushing job in that repo.
 
-The usual checks still apply: the agent is signed in there, the repo is checked out (on the item's `branch`, if it names one), the machine has what it `needs` (Docker, a database), a pinned `machine`, and the machine's slots. A machine's slots are its helper's capacity, or less if its owner set a `jobLimit`.
+The usual checks still apply: the agent is signed in there, the repo is checked out (on the item's `branch`, if it names one), the machine has what it `needs` (Docker, a database), a pinned `machine`, and the machine's slots. An Ollama item that names a `model` goes only to a machine that has that model pulled. A machine's slots are its helper's capacity, or less if its owner set a `jobLimit`.
 
 Nothing here changes the commit and push rules. Nothing goes to prod, is deleted or costs money without Matt.
 
@@ -41,7 +43,7 @@ All are on the agent card at `/.well-known/agent-card.json`. Over A2A, send a da
 `get_lined_up {next?, all?, sinceHours?}` returns:
 
 - `running`: jobs running now, with machine, agent, app and start time.
-- `next`: the next `next` items (default 5; `all: true` lists all of them, held ones too), in the order they'll start. Each has `ready` (it starts as soon as one of `canRunOn` has a free slot), or `why` it's waiting. Examples: "On hold", "Waits for <name>", "Waits for the local models", "Waits for main to be free", or each machine's reason.
+- `next`: the next `next` items (default 5; `all: true` lists all of them, held ones too), in the order they'll start. Each has `ready` (it starts as soon as one of `canRunOn` has a free slot), or `why` it's waiting. Examples: "On hold", "Waits for <name>", "Waits for the local models", "Waits for the default branch to be free" (or a named branch), or each machine's reason.
 - `total`: waiting, ready, held, running.
 - `perApp`: per app, running, ready, waiting (held back), on hold. In ranking order.
 - `perMachine`: per online machine, its slots, running, free, and how many ready items it could take.
@@ -49,7 +51,13 @@ All are on the agent card at `/.well-known/agent-card.json`. Over A2A, send a da
 - `finished`: backlog items that ended in the last `sinceHours` (default 24).
 - `ranking`: the app ranking.
 
-The app shows the same data under **Waiting to start**, at the top of the Dashboard: a line saying these are queued jobs that start by themselves, one line of counts, a running-low line when it applies, and the next three. **Show all** lists everything, per app and per machine, with Hold / Let go, Top of app and Drop. What's happening no longer lists waiting backlog items. Once one starts it shows there like any job.
+The app shows the same data under **Waiting to start**, at the top of the Dashboard:
+- A line saying what's queued, true for what's there: ready jobs start by themselves when a machine is free, held ones wait to be let go, and the rest each say what they wait for.
+- One line of counts: waiting, on hold, then running now.
+- A running-low line when it applies.
+- The next three.
+
+**Show all** lists everything, per app and per machine (e.g. "local 2 of 3 · cloud 1 of 2"), with Hold / Let go, Top of app and Drop. With only running jobs there's nothing to show all. What's happening no longer lists waiting backlog items. Once one starts it shows there like any job.
 
 ## Bringing in the handoff queue
 

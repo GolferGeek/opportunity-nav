@@ -16,3 +16,4 @@ Read INTENTION.md (why) and docs/subscription-usage.md (usage at the source) fir
 - Nothing hard-coded to one person. Matt's setup is seed data.
 - UI text: plain words, one thought per line, quiet by default.
 - Work on your own branch (`claude/...`, `codex/...`); the other builder reviews before merging to main.
+- An Opportunity Nav job works on `opnav/<id>` instead. One started with push (a brief with `push: true`, or a backlog item with `push`) lands on main by itself when it succeeds, so its brief's required checks must pass first; if they can't, end with a question, which stops the landing.
