@@ -108,6 +108,16 @@ export const LeaseRenewResponse = z.object({
   cancel: z.boolean(),
 });
 
+/**
+ * Before a turn pushes anything, its helper asks the server. The server checks the lease and the
+ * cancel flag under the job's lock: a cancel accepted first wins (publish false, cancel true: push
+ * nothing, end the turn "cancelled"); once the server says publish, publishing wins and a later
+ * cancel is refused for that turn. Asking again for the same turn gives the same answer.
+ */
+export const PublishRequest = z.object({ leaseId: z.string().uuid() });
+export const PublishResponse = z.object({ publish: z.boolean(), cancel: z.boolean() });
+export type PublishResponse = z.infer<typeof PublishResponse>;
+
 /** The question a turn ends with when it needs the person. */
 export const NeedsInput = z.object({
   /** Plain words, one thought per line. */

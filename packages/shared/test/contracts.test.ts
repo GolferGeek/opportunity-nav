@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ClaimRequest, JobEvent, NodeHeartbeat, readingIsCurrent, Runner, runsInCloud, UsageReport } from "../src/index.ts";
+import { ClaimRequest, JobEvent, NODE, NodeHeartbeat, PublishResponse, readingIsCurrent, Runner, runsInCloud, UsageReport } from "../src/index.ts";
 
 test("usage report rejects a token-shaped account key", () => {
   const r = UsageReport.safeParse({
@@ -49,4 +49,10 @@ test("cloud jobs have their own slots: a claim can have no local room and still 
   assert.equal(ClaimRequest.parse({ providers: ["claude"] }).cloudMax, undefined, "older helpers don't send it");
   const hb = NodeHeartbeat.parse({ hostname: "h", platform: "darwin", arch: "arm64", helperVersion: "0.1.0", providers: [], capacity: 3, cloudCapacity: 2 });
   assert.equal(hb.cloudCapacity, 2);
+});
+
+test("a helper asks before publishing, and the answer says whether a cancel won", () => {
+  assert.equal(NODE.publish("j1"), "/api/node/jobs/j1/publish");
+  assert.deepEqual(PublishResponse.parse({ publish: false, cancel: true }), { publish: false, cancel: true });
+  assert.equal(PublishResponse.safeParse({ publish: true }).success, false);
 });

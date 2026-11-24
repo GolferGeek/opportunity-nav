@@ -6,6 +6,7 @@
  *   POST {NODE.usage}                     UsageReport          → { accepted: number }
  *   POST {NODE.claim}                     ClaimRequest         → ClaimResponse           (empty turns = nothing to do)
  *   POST {NODE.lease(jobId)}              LeaseRenewRequest    → LeaseRenewResponse      (every ~1/3 of lease; 409 = lease lost → stop worker)
+ *   POST {NODE.publish(jobId)}            PublishRequest       → PublishResponse         (before a turn pushes; publish false = cancelled, push nothing; 409 = lease lost)
  *   POST {NODE.events(jobId)}             JobEventsRequest     → { lastSeq: number }     (idempotent by seq; 409 = lease lost)
  *   POST {NODE.external}                  ExternalWorkReport   → { accepted: number }
  */
@@ -14,6 +15,7 @@ export const NODE = {
   usage: "/api/node/usage",
   claim: "/api/node/jobs/claim",
   lease: (jobId: string) => `/api/node/jobs/${jobId}/lease`,
+  publish: (jobId: string) => `/api/node/jobs/${jobId}/publish`,
   events: (jobId: string) => `/api/node/jobs/${jobId}/events`,
   external: "/api/node/external",
 } as const;
