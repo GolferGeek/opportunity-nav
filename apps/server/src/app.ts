@@ -10,6 +10,7 @@ import {
   ExternalWorkReport,
   JobEventsRequest,
   LeaseRenewRequest,
+  PublishRequest,
   NODE,
   NodeHeartbeat,
   readingIsCurrent,
@@ -19,7 +20,7 @@ import type { Sql } from "./db.ts";
 import { authenticate, createToken, type Principal, type Role } from "./auth.ts";
 import { HttpError } from "./errors.ts";
 import { heartbeat, ingestExternal, ingestUsage, listMachines, machineForToken, setTakingJobs } from "./services/machines.ts";
-import { answerQuestion, cancelJob, claim, createJob, getJob, jobRow, NewJob, recordEvents, renewLease } from "./services/jobs.ts";
+import { answerQuestion, cancelJob, claim, createJob, getJob, jobRow, NewJob, recordEvents, renewLease, startPublishing } from "./services/jobs.ts";
 import { createNode, listTree, NewTreeNode, TreeNodePatch, updateNode } from "./services/tree.ts";
 import { dashboard, happening } from "./services/views.ts";
 import { runAction } from "./services/actions.ts";
@@ -94,6 +95,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     r.post("/api/node/jobs/:jobId/lease", async (req) => {
       const { jobId } = z.object({ jobId: uuid }).parse(req.params);
       return renewLease(sql, req.principal.userId, await machine(req), jobId, LeaseRenewRequest.parse(req.body).leaseId);
+    });
+    r.post("/api/node/jobs/:jobId/publish", async (req) => {
+      const { jobId } = z.object({ jobId: uuid }).parse(req.params);
+      return startPublishing(sql, req.principal.userId, await machine(req), jobId, PublishRequest.parse(req.body).leaseId);
     });
     r.post("/api/node/jobs/:jobId/events", async (req) => {
       const { jobId } = z.object({ jobId: uuid }).parse(req.params);

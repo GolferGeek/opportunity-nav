@@ -205,6 +205,46 @@ describe("server flow", { skip: !url && "set OPNAV_TEST_DATABASE_URL" }, () => {
     assert.equal((await ok(ui, "GET", `/api/jobs/${job.id}`)).status, "cancelled");
   });
 
+  test("a cancel accepted before publishing wins; once publishing starts, it wins", async () => {
+    const ev = (seq: number, e: object) => ({ seq, at: now(), ...e });
+    const start = async (prompt: string) => {
+      const job = await ok(ui, "POST", "/api/jobs", { nodeId: projectId, prompt });
+      const [t] = (await ok(node, "POST", "/api/node/jobs/claim", { providers: ["claude"] })).turns;
+      assert.equal(t.job.id, job.id);
+      return { job, t };
+    };
+
+    // Cancelled just before it asks to publish: no push, and its result counts as cancelled.
+    const a = await start("Cancelled before publishing");
+    assert.equal((await ok(ui, "POST", `/api/jobs/${a.job.id}/cancel`)).status, "cancelling");
+    assert.deepEqual(await ok(node, "POST", `/api/node/jobs/${a.job.id}/publish`, { leaseId: a.t.leaseId }), { publish: false, cancel: true });
+    await ok(node, "POST", `/api/node/jobs/${a.job.id}/events`, { leaseId: a.t.leaseId, events: [ev(0, { type: "result", summary: "Done" })] });
+    const aDone = await ok(ui, "GET", `/api/jobs/${a.job.id}`);
+    assert.equal(aDone.status, "cancelled", "an older helper's result after an accepted cancel is not a success");
+
+    // A question or a retryable error after an accepted cancel also ends it cancelled.
+    const b = await start("Cancelled, then asked");
+    await ok(ui, "POST", `/api/jobs/${b.job.id}/cancel`);
+    await ok(node, "POST", `/api/node/jobs/${b.job.id}/events`, { leaseId: b.t.leaseId, events: [ev(0, { type: "error", code: "rate_limited", message: "Limit", retryable: true })] });
+    assert.equal((await ok(ui, "GET", `/api/jobs/${b.job.id}`)).status, "cancelled");
+    assert.equal((await sql`select count(*)::int as n from turns where job_id = ${b.job.id} and status = 'queued'`)[0]!.n, 0, "not requeued");
+
+    // Publishing approved first: a later cancel is refused and the result stands.
+    const c = await start("Publishes, then someone presses Stop");
+    assert.deepEqual(await ok(node, "POST", `/api/node/jobs/${c.job.id}/publish`, { leaseId: c.t.leaseId }), { publish: true, cancel: false });
+    assert.deepEqual(await ok(node, "POST", `/api/node/jobs/${c.job.id}/publish`, { leaseId: c.t.leaseId }), { publish: true, cancel: false }, "asking again gives the same answer");
+    assert.equal((await ok(ui, "POST", `/api/jobs/${c.job.id}/cancel`)).status, "publishing");
+    assert.equal((await ok(node, "POST", `/api/node/jobs/${c.job.id}/lease`, { leaseId: c.t.leaseId })).cancel, false);
+    await ok(node, "POST", `/api/node/jobs/${c.job.id}/events`, { leaseId: c.t.leaseId, events: [ev(0, { type: "result", summary: "Pushed" })] });
+    assert.equal((await ok(ui, "GET", `/api/jobs/${c.job.id}`)).status, "succeeded");
+
+    // Only the machine holding the lease can ask.
+    const d = await start("Someone else's lease");
+    assert.equal((await call(node2, "POST", `/api/node/jobs/${d.job.id}/publish`, { leaseId: d.t.leaseId })).status, 409);
+    await ok(ui, "POST", `/api/jobs/${d.job.id}/cancel`);
+    await ok(node, "POST", `/api/node/jobs/${d.job.id}/events`, { leaseId: d.t.leaseId, events: [ev(0, { type: "error", code: "cancelled", message: "Stopped", retryable: false })] });
+  });
+
   test("cloudroom jobs go only to a machine that has Cloudroom for that agent", async () => {
     const bad = await call(ui, "POST", "/api/jobs", { nodeId: projectId, prompt: "x", provider: "ollama", runner: "cloudroom" });
     assert.equal(bad.status, 400);

@@ -263,13 +263,20 @@ export async function claim(sql: Sql, userId: string, machineId: string, req: Cl
   });
 }
 
+/**
+ * The running turn this machine holds, locked, with the job's cancel flag read under the job's
+ * lock (turn first, then job, the order event delivery uses). cancelJob locks the job too, so a
+ * cancel and anything decided here (publishing, a final result) happen one after the other.
+ */
 async function runningTurn(db: Db, userId: string, machineId: string, jobId: string, leaseId: string) {
   const [t] = await db`
-    select t.id, t.last_seq, j.cancel_requested, j.project_id from turns t join jobs j on j.id = t.job_id
+    select t.id, t.last_seq, t.publishing_at, j.project_id from turns t join jobs j on j.id = t.job_id
     where t.job_id = ${jobId} and j.user_id = ${userId} and t.status = 'running' and t.lease_id = ${leaseId} and t.node_id = ${machineId}
     for update of t`;
   if (!t) throw new HttpError(409, "This machine no longer holds that job. Stop the worker.");
-  return t as { id: string; last_seq: number; cancel_requested: boolean; project_id: string };
+  const [j] = await db`select cancel_requested from jobs where id = ${jobId} for update`;
+  return { ...t, cancel_requested: !!j?.cancel_requested } as
+    { id: string; last_seq: number; publishing_at: Date | null; cancel_requested: boolean; project_id: string };
 }
 
 export async function renewLease(sql: Sql, userId: string, machineId: string, jobId: string, leaseId: string) {
@@ -278,6 +285,20 @@ export async function renewLease(sql: Sql, userId: string, machineId: string, jo
     const [r] = await tx`update turns set lease_expires_at = now() + make_interval(secs => ${LEASE_SECONDS})
       where id = ${t.id} returning lease_expires_at`;
     return { leaseExpiresAt: new Date(r!.lease_expires_at).toISOString(), cancel: t.cancel_requested };
+  });
+}
+
+/**
+ * A turn asks before it pushes. A cancel accepted first wins: nothing is pushed and the turn ends
+ * cancelled. Otherwise the turn is marked publishing, and from then on publishing wins: cancelJob
+ * refuses to cancel it, so its push and its result stand. Asking again gives the same answer.
+ */
+export async function startPublishing(sql: Sql, userId: string, machineId: string, jobId: string, leaseId: string) {
+  return sql.begin(async (tx) => {
+    const t = await runningTurn(tx, userId, machineId, jobId, leaseId);
+    if (t.cancel_requested) return { publish: false, cancel: true };
+    await tx`update turns set publishing_at = coalesce(publishing_at, now()) where id = ${t.id}`;
+    return { publish: true, cancel: false };
   });
 }
 
@@ -291,7 +312,7 @@ export async function recordEvents(sql: Sql, userId: string, machineId: string, 
       await tx`insert into job_events (turn_id, seq, job_id, type, payload, at)
         values (${t.id}, ${seq}, ${jobId}, ${type}, ${tx.json(payload as any)}, ${at}) on conflict do nothing`;
       lastSeq = seq;
-      const ended = await applyEvent(tx, userId, jobId, t.id, t.project_id, e);
+      const ended = await applyEvent(tx, userId, jobId, t.id, t.project_id, e, t.cancel_requested);
       if (ended) break; // nothing after a terminal event counts
     }
     await tx`update turns set last_seq = ${lastSeq} where id = ${t.id}`;
@@ -300,8 +321,17 @@ export async function recordEvents(sql: Sql, userId: string, machineId: string, 
 }
 
 /** Returns true when the event ended the turn. */
-async function applyEvent(tx: Db, userId: string, jobId: string, turnId: string, projectId: string, e: JobEvent): Promise<boolean> {
+async function applyEvent(tx: Db, userId: string, jobId: string, turnId: string, projectId: string, e: JobEvent,
+  cancelRequested: boolean): Promise<boolean> {
   const endTurn = (status: string) => tx`update turns set status = ${status}, ended_at = now(), lease_id = null where id = ${turnId}`;
+  // A cancel the server accepted wins over however the turn ended: not a success, no question, no retry.
+  // (A turn the server let publish can't have one: cancelJob refuses it from then on.)
+  if (cancelRequested && (e.type === "result" || e.type === "needs_input" || e.type === "error")) {
+    await endTurn("cancelled");
+    await tx`update questions set status = 'dismissed' where job_id = ${jobId} and status = 'open'`;
+    await tx`update jobs set status = 'cancelled', finished_at = now(), updated_at = now() where id = ${jobId}`;
+    return true;
+  }
   switch (e.type) {
     case "session":
       await tx`update jobs set provider_session_id = ${e.providerSessionId}, updated_at = now() where id = ${jobId}`;
@@ -394,6 +424,9 @@ export async function cancelJob(sql: Sql, userId: string, jobId: string) {
     if (!job) throw new HttpError(404, "No such job.");
     if (["succeeded", "failed", "cancelled"].includes(job.status)) return { status: job.status as string };
     if (job.status === "running") {
+      // Once the server let its turn start publishing, publishing wins: the push and its result stand.
+      const [publishing] = await tx`select 1 from turns where job_id = ${jobId} and status = 'running' and publishing_at is not null`;
+      if (publishing) return { status: "publishing" };
       await tx`update jobs set cancel_requested = true, updated_at = now() where id = ${jobId}`;
       return { status: "cancelling" };
     }
