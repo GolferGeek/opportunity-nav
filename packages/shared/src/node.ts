@@ -59,9 +59,10 @@ export const NodeHeartbeat = z.object({
   /**
    * Whether this machine can run Claude jobs in Claude's cloud through a Claude Code
    * routine: ready once its owner has saved the routine's fire URL and token on it.
-   * reason says why not ("not set up", ...). Omitted by older helpers.
+   * reason says why not ("not set up", ...). repos: the repos its routine can run, as repo
+   * identities (repoIdentity); it's given Claude cloud jobs only for those. Omitted by older helpers.
    */
-  claudeCloud: z.object({ ready: z.boolean(), reason: z.string().optional() }).optional(),
+  claudeCloud: z.object({ ready: z.boolean(), reason: z.string().optional(), repos: z.array(z.string()).optional() }).optional(),
   /** What this machine has for jobs that need more than the agent and the repo (see MachineTool). */
   tools: z.array(MachineTool).default([]),
   /** Jobs this node currently holds leases on, so the server can expire the rest. */

@@ -79,6 +79,11 @@ export const ClaimRequest = z.object({
   /** This node will take Claude jobs for Claude's cloud right now (see NodeHeartbeat.claudeCloud). */
   claudeCloud: z.boolean().default(false),
   /**
+   * The repos this node's Claude routine can run (repo identities, see repoIdentity). A Claude cloud
+   * job is handed out only for one of them; without the list (older helpers) none is.
+   */
+  claudeCloudRepos: z.array(z.string()).optional(),
+  /**
    * Max turns to hand out in this call: local slots free. When cloudMax is set,
    * it's direct jobs only and may be 0; without it (older helpers) it covers every job.
    */
