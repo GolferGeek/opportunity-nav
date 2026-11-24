@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cardEmptyNote, cardWindows, projectLabel, readingClass, readingNote } from "../src/labels.ts";
+import { cardEmptyNote, cardWindows, projectLabel, queueCounts, queueLow, readingClass, readingNote } from "../src/labels.ts";
 
 test("a handoff's project label is its path below the top area", () => {
   assert.equal(projectLabel("p1", ["Coding", "Orchestrator AI", "Agents Only"]), "Orchestrator AI / Agents Only");
@@ -45,4 +45,16 @@ test("Antigravity's card leads with Gemini and hides unused Claude and GPT rows"
   assert.equal(cardEmptyNote({ provider: "agy", status: "ok", windows: [w("Claude and GPT models:3p-5h", 5)] }), "Google reports no Gemini limit.");
   assert.equal(cardEmptyNote({ provider: "agy", status: "stale", windows: claude }), null, "a stale card has its own note");
   assert.equal(cardEmptyNote({ provider: "codex", status: "ok", windows: [] }), null);
+});
+
+test("the queue block counts what's waiting, in plain words", () => {
+  assert.equal(queueCounts({ waiting: 4, held: 1, running: 3 }), "4 waiting · 1 on hold · 3 running now");
+  assert.equal(queueCounts({ waiting: 2, held: 0, running: 0 }), "2 waiting");
+  assert.equal(queueCounts({ waiting: 0, held: 0, running: 2 }), "Nothing waiting · 2 running now");
+});
+
+test("the queue block says when it's running low, and only then", () => {
+  assert.equal(queueLow({ low: false, ready: 5, slots: 4 }), null);
+  assert.equal(queueLow({ low: true, ready: 1, slots: 4 }), "Running low: 1 ready to start, room for 4.");
+  assert.equal(queueLow({ low: true, ready: 0, slots: 2 }), "Running low: none ready to start, room for 2.");
 });

@@ -228,7 +228,7 @@ button.on-toggle { background: var(--accent-soft); border-color: var(--accent); 
 .needs-pick { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* Lined up: the backlog, quietly */
-.lined-up { margin-bottom: 14px; }
+.lined-up { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .lined-up .small, .small { font-size: 12px; }
 .lined-up .low { color: var(--question); margin-top: 2px; }
 .lined-up ol.next { margin: 6px 0 8px; padding-left: 20px; }

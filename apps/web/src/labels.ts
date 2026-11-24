@@ -60,3 +60,17 @@ export function cardEmptyNote(s: { provider: string; status: string; windows: re
   if (s.provider !== "agy" || s.status !== "ok" || s.windows.some((w) => w.unit !== "tokens" && !otherModels(w))) return null;
   return cardWindows(s.provider, s.windows).length ? "Google reports no Gemini limit." : "Google reports no Gemini limit.\nClaude and GPT allowance unused.";
 }
+
+/** The Dashboard's queue block ("Waiting to start"): its one line of counts. */
+export function queueCounts(t: { waiting: number; held: number; running: number }): string {
+  const parts = [t.waiting ? `${t.waiting} waiting` : "Nothing waiting"];
+  if (t.held) parts.push(`${t.held} on hold`);
+  if (t.running) parts.push(`${t.running} running now`);
+  return parts.join(" · ");
+}
+
+/** The queue block's running-low line, when fewer jobs are ready than the machines have room for; else null. */
+export function queueLow(r: { low: boolean; ready: number; slots: number }): string | null {
+  if (!r.low) return null;
+  return `Running low: ${r.ready || "none"} ready to start, room for ${r.slots}.`;
+}

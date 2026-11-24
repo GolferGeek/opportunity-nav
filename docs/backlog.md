@@ -49,7 +49,7 @@ All are on the agent card at `/.well-known/agent-card.json`. Over A2A, send a da
 - `finished`: backlog items that ended in the last `sinceHours` (default 24).
 - `ranking`: the app ranking.
 
-The app shows the same data under **Lined up**, at the top of the Dashboard: one line of counts, a running-low line when it applies, and the next three. **Show all** lists everything, per app and per machine, with Hold / Let go, Top of app and Drop. What's happening no longer lists waiting backlog items. Once one starts it shows there like any job.
+The app shows the same data under **Waiting to start**, at the top of the Dashboard: a line saying these are queued jobs that start by themselves, one line of counts, a running-low line when it applies, and the next three. **Show all** lists everything, per app and per machine, with Hold / Let go, Top of app and Drop. What's happening no longer lists waiting backlog items. Once one starts it shows there like any job.
 
 ## Bringing in the handoff queue
 

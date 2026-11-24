@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ago, api, providerName, runsOnText, usePoll, type RunsOn } from "./api.ts";
+import { queueCounts, queueLow } from "./labels.ts";
 
 interface Next {
   id: string;
@@ -25,7 +26,9 @@ export interface Lined {
 }
 
 /**
- * The backlog, quietly: one summary line and the next few in line. Everything
+ * The backlog, quietly, titled "Waiting to start" so it reads as the queue,
+ * not as a second running list (running jobs show under What's happening).
+ * One line saying what it is, one of counts, and the next few in line. Everything
  * else is one click away ("Show all"), where items can be held, let go, moved
  * to the top of their app, or dropped.
  */
@@ -51,14 +54,13 @@ export function LinedUp({ onOpenJob, onError }: { onOpenJob: (id: string) => voi
   return (
     <div className="lined-up">
       <h4 className="row-head">
-        <span>Lined up</span>
+        <span>Waiting to start</span>
         <span className="spacer" />
         <button className="quietbtn" onClick={() => setAll(!all)}>{all ? "Show less" : `Show all (${total.waiting + total.held})`}</button>
       </h4>
-      <div className="muted small">
-        {total.running} running · {total.waiting} waiting{total.held ? ` · ${total.held} on hold` : ""}
-      </div>
-      {runningLow.low && <div className="low small">{runningLow.text}</div>}
+      <div className="muted small">Queued jobs. Each starts by itself when a machine is free.</div>
+      <div className="muted small">{queueCounts(total)}</div>
+      {queueLow(runningLow) && <div className="low small">{queueLow(runningLow)}</div>}
       <ol className="next">
         {data.next.map((n) => (
           <li key={n.id} className={n.held ? "held" : n.ready ? "" : "blocked"}>
